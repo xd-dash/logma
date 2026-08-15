@@ -1,0 +1,24 @@
+[Unit]
+Description=Logma API server
+Documentation=https://github.com/xd-dash/logma
+After=network.target
+
+[Service]
+Type=simple
+User=logma
+Group=logma
+ExecStart=/usr/local/bin/logma 8080
+Restart=on-failure
+RestartSec=5s
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
