@@ -1,0 +1,37 @@
+name: Build logma
+description: Builds the logma binary and caches it for later jobs/steps.
+inputs:
+  go-version-file:
+    description: Path to the go.mod file used to resolve the Go toolchain version.
+    required: false
+    default: go.mod
+outputs:
+  cache-key:
+    description: Cache key the binary was saved under.
+    value: ${{ steps.cache-key.outputs.key }}
+  cache-hit:
+    description: Whether an existing cache entry for this key was found before building.
+    value: ${{ steps.restore.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - id: cache-key
+      shell: bash
+      run: |
+        echo "key=logma-bin-${{ runner.os }}-${{ hashFiles('**/*.go', 'go.sum', 'go.mod') }}" >> "$GITHUB_OUTPUT"
+
+    - id: restore
+      uses: actions/cache@v4
+      with:
+        path: /usr/local/bin/logma
+        key: ${{ steps.cache-key.outputs.key }}
+
+    - if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: ${{ inputs.go-version-file }}
+
+    - if: steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      run: go build -o /usr/local/bin/logma ./cmd/api
