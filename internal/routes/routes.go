@@ -38,6 +38,10 @@ const (
 	subscriptionGroupsPrefix   = "subscription_groups"
 
 	redisScanCount = 1000
+
+	callbackQueueSize  = 256
+	callbackWorkerCount = 4
+	callbackTimeout     = 30 * time.Second
 )
 
 var (
@@ -72,6 +76,17 @@ type subscribeResponse struct {
 	CallbackURL    string `json:"callbackURL"`
 }
 
+type callbackJob struct {
+	callback func(url string, message PublishRequest)
+	url      string
+	message  PublishRequest
+}
+
+type callbackDispatcher struct {
+	jobs chan callbackJob
+	done chan struct{}
+}
+
 type subscriptionManager struct {
 	register   chan registerSubscription
 	unregister chan string
@@ -89,6 +104,58 @@ type registerSubscription struct {
 type cancelSubscription struct {
 	key      string
 	response chan bool
+}
+
+func newCallbackDispatcher() *callbackDispatcher {
+	d := &callbackDispatcher{
+		jobs: make(chan callbackJob, callbackQueueSize),
+		done: make(chan struct{}),
+	}
+
+	for i := 0; i < callbackWorkerCount; i++ {
+		go d.worker()
+	}
+
+	return d
+}
+
+func (d *callbackDispatcher) worker() {
+	for job := range d.jobs {
+		job.callback(job.url, job.message)
+	}
+
+	close(d.done)
+}
+
+func (d *callbackDispatcher) dispatch(
+	callback func(url string, message PublishRequest),
+	url string,
+	message PublishRequest,
+) {
+	job := callbackJob{
+		callback: callback,
+		url:      url,
+		message:  message,
+	}
+
+	select {
+	case d.jobs <- job:
+	default:
+		fmt.Printf(
+			"Callback queue full; dropping callback for %s\n",
+			url,
+		)
+	}
+}
+
+func (d *callbackDispatcher) close() {
+	close(d.jobs)
+
+	for range d.done {
+		// A single done channel is closed by the first worker only,
+		// so worker completion is tracked separately below.
+		break
+	}
 }
 
 func newSubscriptionManager() *subscriptionManager {
@@ -160,6 +227,7 @@ func (m *subscriptionManager) run() {
 				if active == 0 {
 					close(complete)
 				}
+
 				continue
 			}
 
@@ -230,7 +298,9 @@ func (m *subscriptionManager) cancelSubscription(
 	}
 }
 
-func (m *subscriptionManager) shutdown(ctx context.Context) error {
+func (m *subscriptionManager) shutdown(
+	ctx context.Context,
+) error {
 	complete := make(chan struct{})
 
 	select {
@@ -297,7 +367,10 @@ func startSubscription(
 		return nil, errSubscriptionManagerStopped
 	}
 
-	pubsub := client.Subscribe(subCtx, channelName)
+	pubsub := client.Subscribe(
+		subCtx,
+		channelName,
+	)
 
 	if _, err := pubsub.Receive(subCtx); err != nil {
 		cancel()
@@ -327,7 +400,10 @@ func startSubscription(
 		)
 		defer cleanupCancel()
 
-		_ = pubsub.Unsubscribe(cleanupCtx, channelName)
+		_ = pubsub.Unsubscribe(
+			cleanupCtx,
+			channelName,
+		)
 		_ = pubsub.Close()
 
 		return nil, fmt.Errorf(
@@ -337,7 +413,10 @@ func startSubscription(
 		)
 	}
 
-	if err := manager.register(subscriptionKey, cancel); err != nil {
+	if err := manager.register(
+		subscriptionKey,
+		cancel,
+	); err != nil {
 		cancel()
 
 		cleanupCtx, cleanupCancel := context.WithTimeout(
@@ -346,8 +425,14 @@ func startSubscription(
 		)
 		defer cleanupCancel()
 
-		_ = pubsub.Unsubscribe(cleanupCtx, channelName)
-		_ = client.Del(cleanupCtx, subscriptionKey)
+		_ = pubsub.Unsubscribe(
+			cleanupCtx,
+			channelName,
+		)
+		_ = client.Del(
+			cleanupCtx,
+			subscriptionKey,
+		)
 		_ = pubsub.Close()
 
 		return nil, err
@@ -385,7 +470,10 @@ func runSubscription(
 	listener SubscriptionListener,
 	info *subscriptionInfo,
 ) {
+	dispatcher := newCallbackDispatcher()
+
 	defer manager.unregister(info.Key)
+	defer dispatcher.close()
 
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(
@@ -456,7 +544,11 @@ func runSubscription(
 			}
 
 			for _, callback := range listener.Callbacks {
-				callback(listener.CallbackURL, message)
+				dispatcher.dispatch(
+					callback,
+					listener.CallbackURL,
+					message,
+				)
 			}
 
 			if message.Type == "Signal" &&
@@ -480,7 +572,14 @@ func sendMessageToEndpoint(
 		return
 	}
 
-	req, err := http.NewRequest(
+	reqCtx, cancel := context.WithTimeout(
+		context.Background(),
+		callbackTimeout,
+	)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(
+		reqCtx,
 		http.MethodPost,
 		url,
 		strings.NewReader(string(payload)),
@@ -529,7 +628,12 @@ func generateTempChannelID(channelName string) string {
 }
 
 func extractSubscriptionID(key string) string {
-	parts := strings.SplitN(key, ":", 3)
+	parts := strings.SplitN(
+		key,
+		":",
+		3,
+	)
+
 	if len(parts) != 3 {
 		return ""
 	}
@@ -559,7 +663,9 @@ func activeChannelsHandler(
 		"application/json",
 	)
 
-	if err := json.NewEncoder(w).Encode(channels); err != nil {
+	if err := json.NewEncoder(w).Encode(
+		channels,
+	); err != nil {
 		fmt.Printf(
 			"Error encoding Redis channels: %v\n",
 			err,
@@ -575,7 +681,9 @@ func bootstrapHandler(
 		"PUBSUB_DEFAULT_CALLBACK_URL",
 	)
 
-	axiomURL := os.Getenv("DEFAULT_AXIOM_URL")
+	axiomURL := os.Getenv(
+		"DEFAULT_AXIOM_URL",
+	)
 
 	requests := []struct {
 		channel     string
@@ -622,7 +730,9 @@ func bootstrapHandler(
 	}
 
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("Bootstrap successful\n"))
+	_, _ = w.Write(
+		[]byte("Bootstrap successful\n"),
+	)
 }
 
 func NewRouter() http.Handler {
@@ -738,9 +848,9 @@ func subscribeHandler(
 	)
 	w.WriteHeader(http.StatusCreated)
 
-	if err := json.NewEncoder(w).Encode(
-		response,
-	); err != nil {
+	if err := json.NewEncoder(
+		w,
+	).Encode(response); err != nil {
 		fmt.Printf(
 			"Error encoding subscription response: %v\n",
 			err,
@@ -756,7 +866,10 @@ func generateGroupID() string {
 }
 
 func scanKeys(pattern string) ([]string, error) {
-	keys := make([]string, 0)
+	keys := make(
+		[]string,
+		0,
+	)
 
 	iter := client.Scan(
 		rootCtx,
@@ -766,7 +879,10 @@ func scanKeys(pattern string) ([]string, error) {
 	).Iterator()
 
 	for iter.Next(rootCtx) {
-		keys = append(keys, iter.Val())
+		keys = append(
+			keys,
+			iter.Val(),
+		)
 	}
 
 	if err := iter.Err(); err != nil {
@@ -804,7 +920,10 @@ func saveSubscriptionGroup(
 			key,
 		).Result()
 		if err != nil {
-			if errors.Is(err, redis.Nil) {
+			if errors.Is(
+				err,
+				redis.Nil,
+			) {
 				continue
 			}
 
@@ -821,6 +940,7 @@ func saveSubscriptionGroup(
 			":",
 			3,
 		)
+
 		if len(parts) != 3 {
 			fmt.Printf(
 				"Unexpected key format: %s\n",
@@ -862,9 +982,12 @@ func saveSubscriptionGroup(
 		"Content-Type",
 		"text/plain",
 	)
+
 	w.WriteHeader(http.StatusOK)
 
-	_, _ = w.Write([]byte(groupID))
+	_, _ = w.Write(
+		[]byte(groupID),
+	)
 }
 
 func loadSubscriptionGroup(
@@ -900,7 +1023,10 @@ func loadSubscriptionGroup(
 			key,
 		).Result()
 		if err != nil {
-			if errors.Is(err, redis.Nil) {
+			if errors.Is(
+				err,
+				redis.Nil,
+			) {
 				continue
 			}
 
@@ -949,6 +1075,7 @@ func loadSubscriptionGroup(
 		"Content-Type",
 		"application/json",
 	)
+
 	w.WriteHeader(http.StatusOK)
 
 	if err := json.NewEncoder(
@@ -1015,7 +1142,9 @@ func listSubscriptionGroups(
 		return
 	}
 
-	groupSet := make(map[string]struct{})
+	groupSet := make(
+		map[string]struct{},
+	)
 
 	prefix := subscriptionGroupsPrefix + ":"
 
@@ -1057,6 +1186,7 @@ func listSubscriptionGroups(
 		"Content-Type",
 		"application/json",
 	)
+
 	w.WriteHeader(http.StatusOK)
 
 	if err := json.NewEncoder(
