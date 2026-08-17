@@ -7,7 +7,8 @@ After=network.target
 Type=simple
 User=logma
 Group=logma
-ExecStart=/usr/local/bin/logma 8080
+EnvironmentFile=/etc/logma/logma.env
+ExecStart=/usr/local/bin/logma ${PORT}
 Restart=on-failure
 RestartSec=5s
 
