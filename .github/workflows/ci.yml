@@ -18,17 +18,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: false
+          cache: true
 
-      - name: Resolve module graph
+      - name: Check module graph
         run: |
           go mod tidy
-          echo '--- go.mod ---'
-          cat go.mod
-          echo '--- end go.mod ---'
-          echo '--- go.sum ---'
-          cat go.sum
-          echo '--- end go.sum ---'
+          git diff --exit-code -- go.mod go.sum
 
       - name: Check formatting
         run: |
