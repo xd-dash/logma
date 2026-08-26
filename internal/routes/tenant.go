@@ -134,5 +134,9 @@ func activeSubscriptionPattern(tenantID, subscriptionID, channel string) string 
 }
 
 func subscriptionGroupPattern(tenantID, groupID, subscriptionID, channel string) string {
-	return "sg:" + tenantID + ":" + groupID + ":" + subscriptionID + ":" + channel
+	prefix := "sg:" + tenantID + ":" + groupID + ":"
+	if subscriptionID == "" && channel == "" {
+		return prefix
+	}
+	return prefix + subscriptionID + ":" + channel
 }
