@@ -4,9 +4,6 @@ on:
   push:
     branches:
       - codex/redis-utils-subscription-scans
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
