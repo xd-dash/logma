@@ -1,27 +1,37 @@
 # systemd service
 
-Installs `logma` as a systemd service running under a dedicated system user.
+Logma runs as the dedicated unprivileged `logma` user, managed by the system systemd instance. This keeps boot/restart semantics independent of an interactive login session while still preventing the application from running as root.
+
+Production deployments should build the Linux binary in CI and copy the resulting artifact to the server. The server does not need the Go toolchain.
+
+Initial host setup:
 
 ```sh
-# build and install the binary
-go build -o /usr/local/bin/logma ./cmd/api
-
-# create a dedicated, unprivileged system user
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin logma
 
-# install the environment file (readable only by the logma user)
 sudo mkdir -p /etc/logma
 sudo cp deploy/systemd/logma.env.example /etc/logma/logma.env
 sudo chown logma:logma /etc/logma/logma.env
 sudo chmod 600 /etc/logma/logma.env
 # edit /etc/logma/logma.env to set PORT
 
-# install and enable the unit
 sudo cp deploy/systemd/logma.service /etc/systemd/system/logma.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now logma
+sudo systemctl enable logma
+```
 
-# check status / logs
+A CI-built binary can first be copied to a staging location such as `/tmp/logma-<commit-sha>`. Installing or promoting that artifact is a separate privileged host operation:
+
+```sh
+sudo install -o root -g root -m 0755 /tmp/logma-<commit-sha> /usr/local/bin/logma
+sudo systemctl restart logma
+```
+
+Check status and logs:
+
+```sh
 sudo systemctl status logma
 sudo journalctl -u logma -f
 ```
+
+Keeping build, transport, and privileged installation as separate steps makes rollback and access boundaries explicit.
