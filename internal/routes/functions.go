@@ -12,16 +12,28 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+const adminAPIKeyHeader = "X-Admin-API-Key"
+
 var aclTokenPattern = regexp.MustCompile(`^[A-Za-z0-9_.:@-]+$`)
 
 type registerFunctionRequest struct {
-	Source        string   `json:"source"`
-	FunctionNames []string `json:"functionNames"`
-	ACLUsername   string   `json:"aclUsername"`
-	ChannelPattern string  `json:"channelPattern,omitempty"`
+	Source         string   `json:"source"`
+	FunctionNames  []string `json:"functionNames"`
+	ACLUsername    string   `json:"aclUsername"`
+	ChannelPattern string   `json:"channelPattern,omitempty"`
 }
 
 func registerFunctionHandler(w http.ResponseWriter, r *http.Request) {
+	adminAPIKey := os.Getenv("ADMIN_API_KEY")
+	if adminAPIKey == "" {
+		http.Error(w, "ADMIN_API_KEY is not configured", http.StatusInternalServerError)
+		return
+	}
+	if r.Header.Get(adminAPIKeyHeader) != adminAPIKey {
+		http.Error(w, "Invalid admin API key", http.StatusUnauthorized)
+		return
+	}
+
 	tenantID, err := tenantIDFromRequest(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -109,10 +121,10 @@ func registerFunctionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
-		"tenantID":       tenantID,
-		"library":        fmt.Sprint(loaded),
-		"functionNames":  body.FunctionNames,
-		"aclUsername":    body.ACLUsername,
+		"tenantID":      tenantID,
+		"library":       fmt.Sprint(loaded),
+		"functionNames": body.FunctionNames,
+		"aclUsername":   body.ACLUsername,
 		"keyPatterns": []string{
 			activeSubscriptionPattern(tenantID, "*", "*"),
 			subscriptionGroupPattern(tenantID, "*", "*", "*"),
