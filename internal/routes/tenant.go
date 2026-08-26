@@ -78,16 +78,24 @@ func (r *tenantClientRegistry) close() error {
 	return joined
 }
 
-func tenantFromRequest(r *http.Request) (tenantScope, error) {
+func tenantIDFromRequest(r *http.Request) (string, error) {
 	tenantID := strings.TrimSpace(r.Header.Get(tenantIDHeader))
 	if tenantID == "" {
 		tenantID = strings.TrimSpace(os.Getenv("LOGMA_DEFAULT_TENANT_ID"))
 	}
 	if tenantID == "" {
-		return tenantScope{}, errors.New("tenant ID is required")
+		return "", errors.New("tenant ID is required")
 	}
 	if strings.Contains(tenantID, ":") {
-		return tenantScope{}, errors.New("tenant ID must not contain ':'")
+		return "", errors.New("tenant ID must not contain ':'")
+	}
+	return tenantID, nil
+}
+
+func tenantFromRequest(r *http.Request) (tenantScope, error) {
+	tenantID, err := tenantIDFromRequest(r)
+	if err != nil {
+		return tenantScope{}, err
 	}
 
 	username := strings.TrimSpace(r.Header.Get(redisUsernameHeader))
