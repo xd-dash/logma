@@ -20,24 +20,17 @@ import (
 )
 
 var (
-	client = redis.NewClient(&redis.Options{
-		Addr:     os.Getenv("REDIS_URI"),
-		Password: os.Getenv("REDISCLI_AUTH"),
-		DB:       0,
-	})
-
 	rootCtx, rootCancel = context.WithCancel(context.Background())
 	manager             = newSubscriptionManager()
+	tenantClients       = newTenantClientRegistry()
 	httpClient          = &http.Client{Timeout: 30 * time.Second}
 )
 
 const (
-	apiKeyHeader               = "X-API-Key"
-	activeSubscriptionsPattern = "active_subscriptions:%s:%s"
-	subscriptionGroupsPrefix   = "subscription_groups"
-	callbackQueueSize          = 256
-	callbackWorkerCount        = 4
-	callbackTimeout            = 30 * time.Second
+	apiKeyHeader        = "X-API-Key"
+	callbackQueueSize   = 256
+	callbackWorkerCount = 4
+	callbackTimeout     = 30 * time.Second
 )
 
 var errSubscriptionManagerStopped = errors.New("subscription manager is stopped")
@@ -58,6 +51,7 @@ type PublishRequest struct {
 }
 
 type subscriptionInfo struct {
+	TenantID    string `json:"tenantID"`
 	ID          string `json:"subscriptionID"`
 	Key         string `json:"-"`
 	Channel     string `json:"channel"`
@@ -259,7 +253,16 @@ func authenticateAPIKey(next http.Handler) http.Handler {
 	})
 }
 
-func startSubscription(channelName, callbackURL string) (*subscriptionInfo, error) {
+func requestTenantScope(w http.ResponseWriter, r *http.Request) (tenantScope, bool) {
+	scope, err := tenantFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return tenantScope{}, false
+	}
+	return scope, true
+}
+
+func startSubscription(scope tenantScope, channelName, callbackURL string) (*subscriptionInfo, error) {
 	if channelName == "" {
 		return nil, errors.New("channel name is empty")
 	}
@@ -273,42 +276,42 @@ func startSubscription(channelName, callbackURL string) (*subscriptionInfo, erro
 		return nil, errSubscriptionManagerStopped
 	}
 
-	pubsub := client.Subscribe(subCtx, channelName)
+	pubsub := scope.Client.Subscribe(subCtx, channelName)
 	if _, err := pubsub.Receive(subCtx); err != nil {
 		cancel()
 		_ = pubsub.Close()
 		return nil, fmt.Errorf("subscribe to Redis channel %q: %w", channelName, err)
 	}
 
-	subscriptionKey := generateTempChannelID(channelName)
-	info := &subscriptionInfo{
-		ID:          extractSubscriptionID(subscriptionKey),
-		Key:         subscriptionKey,
-		Channel:     channelName,
-		CallbackURL: callbackURL,
+	subscriptionKey := activeSubscriptionPattern(scope.ID, fmt.Sprintf("%d", time.Now().UnixNano()), channelName)
+	info, err := subscriptionFromKeyParts(subscriptionKey, callbackURL)
+	if err != nil {
+		cancel()
+		_ = pubsub.Close()
+		return nil, err
 	}
 
-	if err := client.Set(subCtx, subscriptionKey, callbackURL, 0).Err(); err != nil {
+	if err := scope.Client.Set(subCtx, subscriptionKey, callbackURL, 0).Err(); err != nil {
 		cancel()
 		_ = pubsub.Close()
 		return nil, fmt.Errorf("save subscription state for %q: %w", channelName, err)
 	}
 	if err := manager.registerSubscription(subscriptionKey, cancel); err != nil {
 		cancel()
-		_ = client.Del(context.Background(), subscriptionKey).Err()
+		_ = scope.Client.Del(context.Background(), subscriptionKey).Err()
 		_ = pubsub.Close()
 		return nil, err
 	}
 
-	go runSubscription(subCtx, pubsub, SubscriptionListener{
+	go runSubscription(scope.Client, subCtx, pubsub, SubscriptionListener{
 		Channel:     channelName,
 		CallbackURL: callbackURL,
 		Callbacks:   []func(string, PublishRequest){sendMessageToEndpoint},
-	}, info)
-	return info, nil
+	}, &info)
+	return &info, nil
 }
 
-func runSubscription(subCtx context.Context, pubsub *redis.PubSub, listener SubscriptionListener, info *subscriptionInfo) {
+func runSubscription(redisClient *redis.Client, subCtx context.Context, pubsub *redis.PubSub, listener SubscriptionListener, info *subscriptionInfo) {
 	dispatcher := newCallbackDispatcher()
 	defer dispatcher.close()
 	defer manager.unregisterSubscription(info.Key)
@@ -316,7 +319,7 @@ func runSubscription(subCtx context.Context, pubsub *redis.PubSub, listener Subs
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = pubsub.Unsubscribe(cleanupCtx, listener.Channel)
-		_ = client.Del(cleanupCtx, info.Key).Err()
+		_ = redisClient.Del(cleanupCtx, info.Key).Err()
 		_ = pubsub.Close()
 	}()
 
@@ -370,36 +373,29 @@ func sendMessageToEndpoint(url string, message PublishRequest) {
 	}
 }
 
-func generateTempChannelID(channelName string) string {
-	return fmt.Sprintf("active_subscriptions:%d:%s", time.Now().UnixNano(), channelName)
-}
-
-func extractSubscriptionID(key string) string {
-	parts := strings.SplitN(key, ":", 3)
-	if len(parts) != 3 {
-		return ""
-	}
-	return parts[1]
-}
-
-func subscriptionFromKey(ctx context.Context, redisClient *redis.Client, key string) (subscriptionInfo, error) {
-	parts := strings.SplitN(key, ":", 3)
-	if len(parts) != 3 {
+func subscriptionFromKeyParts(key, callbackURL string) (subscriptionInfo, error) {
+	parts := strings.SplitN(key, ":", 4)
+	if len(parts) != 4 || parts[0] != "as" {
 		return subscriptionInfo{}, fmt.Errorf("unexpected active subscription key %q", key)
 	}
-	callbackURL, err := redisClient.Get(ctx, key).Result()
-	if err != nil {
-		return subscriptionInfo{}, err
-	}
 	return subscriptionInfo{
-		ID:          parts[1],
+		TenantID:    parts[1],
+		ID:          parts[2],
 		Key:         key,
-		Channel:     parts[2],
+		Channel:     parts[3],
 		CallbackURL: callbackURL,
 	}, nil
 }
 
-func scanActiveSubscriptions(ctx context.Context, pattern string) ([]subscriptionInfo, error) {
+func subscriptionFromKey(ctx context.Context, redisClient *redis.Client, key string) (subscriptionInfo, error) {
+	callbackURL, err := redisClient.Get(ctx, key).Result()
+	if err != nil {
+		return subscriptionInfo{}, err
+	}
+	return subscriptionFromKeyParts(key, callbackURL)
+}
+
+func scanActiveSubscriptions(ctx context.Context, scope tenantScope, pattern string) ([]subscriptionInfo, error) {
 	subscriptions := make([]subscriptionInfo, 0)
 	collect := callbacks.Callback(func(ctx context.Context, redisClient *redis.Client, key string) ([]byte, error) {
 		subscription, err := subscriptionFromKey(ctx, redisClient, key)
@@ -412,7 +408,7 @@ func scanActiveSubscriptions(ctx context.Context, pattern string) ([]subscriptio
 		subscriptions = append(subscriptions, subscription)
 		return nil, nil
 	})
-	_, _, err := scanner.RunScan(ctx, pattern, 0, client, nil, nil, []callbacks.Callback{collect})
+	_, _, err := scanner.RunScan(ctx, pattern, 0, scope.Client, nil, nil, []callbacks.Callback{collect})
 	if err != nil {
 		return nil, err
 	}
@@ -420,9 +416,9 @@ func scanActiveSubscriptions(ctx context.Context, pattern string) ([]subscriptio
 	return subscriptions, nil
 }
 
-func scanGroupMembers(ctx context.Context, groupID string) ([]subscriptionInfo, error) {
+func scanGroupMembers(ctx context.Context, scope tenantScope, groupID string) ([]subscriptionInfo, error) {
 	members := make([]subscriptionInfo, 0)
-	prefix := fmt.Sprintf("%s:%s:", subscriptionGroupsPrefix, groupID)
+	prefix := subscriptionGroupPattern(scope.ID, groupID, "", "")
 	collect := callbacks.Callback(func(ctx context.Context, redisClient *redis.Client, key string) ([]byte, error) {
 		callbackURL, err := redisClient.Get(ctx, key).Result()
 		if err != nil {
@@ -431,24 +427,28 @@ func scanGroupMembers(ctx context.Context, groupID string) ([]subscriptionInfo, 
 			}
 			return nil, err
 		}
-		remainder := strings.TrimPrefix(key, prefix)
-		parts := strings.SplitN(remainder, ":", 2)
-		if len(parts) != 2 {
+		parts := strings.SplitN(key, ":", 5)
+		if len(parts) != 5 || parts[0] != "sg" || parts[1] != scope.ID || parts[2] != groupID {
 			return nil, fmt.Errorf("unexpected subscription group key %q", key)
 		}
 		members = append(members, subscriptionInfo{
-			ID:          parts[0],
-			Channel:     parts[1],
+			TenantID:    scope.ID,
+			ID:          parts[3],
+			Channel:     parts[4],
 			CallbackURL: callbackURL,
 		})
 		return nil, nil
 	})
-	_, _, err := scanner.RunScan(ctx, prefix+"*", 0, client, nil, nil, []callbacks.Callback{collect})
+	_, _, err := scanner.RunScan(ctx, prefix+"*", 0, scope.Client, nil, nil, []callbacks.Callback{collect})
 	return members, err
 }
 
 func activeChannelsHandler(w http.ResponseWriter, r *http.Request) {
-	channels, err := client.PubSubChannels(r.Context(), "").Result()
+	scope, ok := requestTenantScope(w, r)
+	if !ok {
+		return
+	}
+	channels, err := scope.Client.PubSubChannels(r.Context(), "").Result()
 	if err != nil {
 		http.Error(w, "Error retrieving Redis channels", http.StatusInternalServerError)
 		return
@@ -457,7 +457,11 @@ func activeChannelsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func listActiveSubscriptions(w http.ResponseWriter, r *http.Request) {
-	subscriptions, err := scanActiveSubscriptions(r.Context(), fmt.Sprintf(activeSubscriptionsPattern, "*", "*"))
+	scope, ok := requestTenantScope(w, r)
+	if !ok {
+		return
+	}
+	subscriptions, err := scanActiveSubscriptions(r.Context(), scope, activeSubscriptionPattern(scope.ID, "*", "*"))
 	if err != nil {
 		http.Error(w, "Error retrieving active subscriptions", http.StatusInternalServerError)
 		return
@@ -466,12 +470,16 @@ func listActiveSubscriptions(w http.ResponseWriter, r *http.Request) {
 }
 
 func deleteActiveSubscription(w http.ResponseWriter, r *http.Request) {
+	scope, ok := requestTenantScope(w, r)
+	if !ok {
+		return
+	}
 	id := chi.URLParam(r, "subscriptionID")
 	if id == "" {
 		http.Error(w, "subscription ID is required", http.StatusBadRequest)
 		return
 	}
-	subscriptions, err := scanActiveSubscriptions(r.Context(), fmt.Sprintf(activeSubscriptionsPattern, id, "*"))
+	subscriptions, err := scanActiveSubscriptions(r.Context(), scope, activeSubscriptionPattern(scope.ID, id, "*"))
 	if err != nil {
 		http.Error(w, "Error resolving active subscription", http.StatusInternalServerError)
 		return
@@ -494,6 +502,10 @@ func deleteActiveSubscription(w http.ResponseWriter, r *http.Request) {
 }
 
 func subscribeHandler(w http.ResponseWriter, r *http.Request) {
+	scope, ok := requestTenantScope(w, r)
+	if !ok {
+		return
+	}
 	channelName := chi.URLParam(r, "channelName")
 	var body struct {
 		CallbackURL string `json:"callbackURL"`
@@ -509,7 +521,7 @@ func subscribeHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Default callback URL not set", http.StatusInternalServerError)
 		return
 	}
-	info, err := startSubscription(channelName, body.CallbackURL)
+	info, err := startSubscription(scope, channelName, body.CallbackURL)
 	if err != nil {
 		http.Error(w, "Error starting Redis subscription", http.StatusInternalServerError)
 		return
@@ -537,6 +549,10 @@ func parseBoolQuery(r *http.Request, name string) (bool, error) {
 }
 
 func saveSubscriptionGroup(w http.ResponseWriter, r *http.Request) {
+	scope, ok := requestTenantScope(w, r)
+	if !ok {
+		return
+	}
 	all, err := parseBoolQuery(r, "all")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -548,7 +564,7 @@ func saveSubscriptionGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	active, err := scanActiveSubscriptions(r.Context(), fmt.Sprintf(activeSubscriptionsPattern, "*", "*"))
+	active, err := scanActiveSubscriptions(r.Context(), scope, activeSubscriptionPattern(scope.ID, "*", "*"))
 	if err != nil {
 		http.Error(w, "Error retrieving active subscriptions", http.StatusInternalServerError)
 		return
@@ -573,7 +589,7 @@ func saveSubscriptionGroup(w http.ResponseWriter, r *http.Request) {
 		}
 		selected = selected[:0]
 		for _, subscription := range active {
-			if _, ok := wanted[subscription.ID]; ok {
+			if _, exists := wanted[subscription.ID]; exists {
 				selected = append(selected, subscription)
 				delete(wanted, subscription.ID)
 			}
@@ -590,9 +606,9 @@ func saveSubscriptionGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	groupID := generateGroupID()
-	pipe := client.Pipeline()
+	pipe := scope.Client.Pipeline()
 	for _, subscription := range selected {
-		key := fmt.Sprintf("%s:%s:%s:%s", subscriptionGroupsPrefix, groupID, subscription.ID, subscription.Channel)
+		key := subscriptionGroupPattern(scope.ID, groupID, subscription.ID, subscription.Channel)
 		pipe.Set(r.Context(), key, subscription.CallbackURL, 0)
 	}
 	if _, err := pipe.Exec(r.Context()); err != nil {
@@ -610,6 +626,7 @@ func saveSubscriptionGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
+		"tenantID":      scope.ID,
 		"groupID":       groupID,
 		"subscriptions": len(selected),
 		"shutdown":      shutdownCount,
@@ -617,8 +634,12 @@ func saveSubscriptionGroup(w http.ResponseWriter, r *http.Request) {
 }
 
 func loadSubscriptionGroup(w http.ResponseWriter, r *http.Request) {
+	scope, ok := requestTenantScope(w, r)
+	if !ok {
+		return
+	}
 	groupID := chi.URLParam(r, "groupID")
-	members, err := scanGroupMembers(r.Context(), groupID)
+	members, err := scanGroupMembers(r.Context(), scope, groupID)
 	if err != nil {
 		http.Error(w, "Error retrieving subscription group data", http.StatusInternalServerError)
 		return
@@ -629,27 +650,31 @@ func loadSubscriptionGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	loaded := 0
 	for _, member := range members {
-		if _, err := startSubscription(member.Channel, member.CallbackURL); err == nil {
+		if _, err := startSubscription(scope, member.Channel, member.CallbackURL); err == nil {
 			loaded++
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"tenantID":      scope.ID,
 		"groupID":       groupID,
 		"subscriptions": loaded,
 	})
 }
 
 func listSubscriptionGroups(w http.ResponseWriter, r *http.Request) {
+	scope, ok := requestTenantScope(w, r)
+	if !ok {
+		return
+	}
 	groupSet := make(map[string]struct{})
 	collect := callbacks.Callback(func(_ context.Context, _ *redis.Client, key string) ([]byte, error) {
-		remainder := strings.TrimPrefix(key, subscriptionGroupsPrefix+":")
-		parts := strings.SplitN(remainder, ":", 2)
-		if len(parts) > 0 && parts[0] != "" {
-			groupSet[parts[0]] = struct{}{}
+		parts := strings.SplitN(key, ":", 4)
+		if len(parts) >= 3 && parts[0] == "sg" && parts[1] == scope.ID && parts[2] != "" {
+			groupSet[parts[2]] = struct{}{}
 		}
 		return nil, nil
 	})
-	_, _, err := scanner.RunScan(r.Context(), subscriptionGroupsPrefix+":*", 0, client, nil, nil, []callbacks.Callback{collect})
+	_, _, err := scanner.RunScan(r.Context(), subscriptionGroupPattern(scope.ID, "*", "*", "*"), 0, scope.Client, nil, nil, []callbacks.Callback{collect})
 	if err != nil {
 		http.Error(w, "Error retrieving subscription groups", http.StatusInternalServerError)
 		return
@@ -663,6 +688,11 @@ func listSubscriptionGroups(w http.ResponseWriter, r *http.Request) {
 }
 
 func bootstrapHandler(w http.ResponseWriter, r *http.Request) {
+	scope, err := defaultTenantScope()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	defaultCallbackURL := os.Getenv("PUBSUB_DEFAULT_CALLBACK_URL")
 	axiomURL := os.Getenv("DEFAULT_AXIOM_URL")
 	requests := []struct {
@@ -678,7 +708,7 @@ func bootstrapHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Bootstrap callback URL is not configured", http.StatusInternalServerError)
 			return
 		}
-		if _, err := startSubscription(request.channel, request.callbackURL); err != nil {
+		if _, err := startSubscription(scope, request.channel, request.callbackURL); err != nil {
 			http.Error(w, "Bootstrap subscription failed", http.StatusInternalServerError)
 			return
 		}
@@ -716,6 +746,7 @@ func NewRouter() http.Handler {
 		r.Post("/{groupID}/load", loadSubscriptionGroup)
 	})
 
+	r.Post("/functions", registerFunctionHandler)
 	r.Get("/bootstrap", bootstrapHandler)
 	return r
 }
@@ -728,5 +759,5 @@ func Shutdown(ctx context.Context) error {
 	if err := manager.shutdownSubscriptions(ctx); err != nil {
 		return err
 	}
-	return client.Close()
+	return tenantClients.close()
 }
