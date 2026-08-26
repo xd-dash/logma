@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -39,7 +40,7 @@ const (
 
 	redisScanCount = 1000
 
-	callbackQueueSize  = 256
+	callbackQueueSize   = 256
 	callbackWorkerCount = 4
 	callbackTimeout     = 30 * time.Second
 )
@@ -84,7 +85,7 @@ type callbackJob struct {
 
 type callbackDispatcher struct {
 	jobs chan callbackJob
-	done chan struct{}
+	wg   sync.WaitGroup
 }
 
 type subscriptionManager struct {
@@ -109,9 +110,9 @@ type cancelSubscription struct {
 func newCallbackDispatcher() *callbackDispatcher {
 	d := &callbackDispatcher{
 		jobs: make(chan callbackJob, callbackQueueSize),
-		done: make(chan struct{}),
 	}
 
+	d.wg.Add(callbackWorkerCount)
 	for i := 0; i < callbackWorkerCount; i++ {
 		go d.worker()
 	}
@@ -120,11 +121,11 @@ func newCallbackDispatcher() *callbackDispatcher {
 }
 
 func (d *callbackDispatcher) worker() {
+	defer d.wg.Done()
+
 	for job := range d.jobs {
 		job.callback(job.url, job.message)
 	}
-
-	close(d.done)
 }
 
 func (d *callbackDispatcher) dispatch(
@@ -150,12 +151,7 @@ func (d *callbackDispatcher) dispatch(
 
 func (d *callbackDispatcher) close() {
 	close(d.jobs)
-
-	for range d.done {
-		// A single done channel is closed by the first worker only,
-		// so worker completion is tracked separately below.
-		break
-	}
+	d.wg.Wait()
 }
 
 func newSubscriptionManager() *subscriptionManager {
@@ -472,8 +468,8 @@ func runSubscription(
 ) {
 	dispatcher := newCallbackDispatcher()
 
-	defer manager.unregister(info.Key)
 	defer dispatcher.close()
+	defer manager.unregister(info.Key)
 
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(
