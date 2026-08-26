@@ -23,6 +23,9 @@ jobs:
       - name: Resolve module graph
         run: |
           go mod tidy
+          echo '--- go.mod ---'
+          cat go.mod
+          echo '--- end go.mod ---'
           echo '--- go.sum ---'
           cat go.sum
           echo '--- end go.sum ---'
