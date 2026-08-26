@@ -18,10 +18,14 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
 
-      - name: Download modules
-        run: go mod download
+      - name: Resolve module graph
+        run: |
+          go mod tidy
+          echo '--- go.sum ---'
+          cat go.sum
+          echo '--- end go.sum ---'
 
       - name: Check formatting
         run: |
