@@ -1,34 +1,77 @@
 package main
 
 import (
-  "fmt"
-  "net/http"
-  "os"
-  "strconv"
-  "github.com/xd-dash/logma/internal/routes"
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
+	"time"
+
+	"github.com/xd-dash/logma/internal/routes"
 )
 
-func main(){
-   fmt.Printf("starting server ... ")
-   router := routes.NewRouter() 
-   port := getPortFromArgs()
-   addr := fmt.Sprintf(":%d", port)
-   fmt.Printf("Go Server is listening on http://localhost%s\n", addr)
-   err := http.ListenAndServe(addr, router)
-   if err != nil {
-     panic(err)
-   }   
+const shutdownTimeout = 10 * time.Second
+
+func main() {
+	router := routes.NewRouter()
+	port := getPortFromArgs()
+	addr := fmt.Sprintf(":%d", port)
+
+	server := &http.Server{
+		Addr:    addr,
+		Handler: router,
+	}
+
+	serverErr := make(chan error, 1)
+	go func() {
+		fmt.Printf("Go Server is listening on http://localhost%s\n", addr)
+		serverErr <- server.ListenAndServe()
+	}()
+
+	signalCtx, stop := signal.NotifyContext(
+		context.Background(),
+		os.Interrupt,
+		syscall.SIGTERM,
+	)
+	defer stop()
+
+	select {
+	case err := <-serverErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			panic(err)
+		}
+		return
+	case <-signalCtx.Done():
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(
+		context.Background(),
+		shutdownTimeout,
+	)
+	defer cancel()
+
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		fmt.Printf("HTTP shutdown error: %v\n", err)
+	}
+
+	if err := routes.Shutdown(shutdownCtx); err != nil {
+		fmt.Printf("subscription shutdown error: %v\n", err)
+	}
 }
 
 func getPortFromArgs() int {
-    defaultPort := 8080
-    if len(os.Args) > 1 { 
-        port, err := strconv.Atoi(os.Args[1])
-        if err != nil {
-            fmt.Println("Invalid port provided. Using default port:", defaultPort)
-            return defaultPort
-        }
-        return port
-    }   
-    return defaultPort
+	defaultPort := 8080
+	if len(os.Args) > 1 {
+		port, err := strconv.Atoi(os.Args[1])
+		if err != nil {
+			fmt.Println("Invalid port provided. Using default port:", defaultPort)
+			return defaultPort
+		}
+		return port
+	}
+	return defaultPort
 }
