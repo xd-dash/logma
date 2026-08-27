@@ -1,0 +1,29 @@
+name: Test project-scoped tenancy
+
+on:
+  push:
+    branches:
+      - codex/project-scoped-tenancy
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Test provider-neutral scope mapping
+        env:
+          LOGMA_SCOPE_ID: scope-ci-a
+          LOGMA_SCOPE_NAMESPACE: subscriptions
+          LOGMA_SCOPE_DB: "4"
+          MARAI_KEY_ID: logma
+          LOGMA_SCOPE_PROVIDER: gcp
+          LOGMA_EXTERNAL_PROJECT: mock-project-a
+        run: go test ./...
