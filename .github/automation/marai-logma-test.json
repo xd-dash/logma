@@ -4,5 +4,5 @@
   "run_standalone_main": true,
   "redis_image": "redis:8-alpine",
   "marai_secret_db_count": 8,
-  "request": "test-marai-logma-coupling-v2"
+  "request": "test-marai-logma-coupling-v3"
 }
