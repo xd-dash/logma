@@ -290,8 +290,11 @@ func normalizeCallback(secret callbackSecret) (callbackSecret, error) {
 	if secret.AccessToken != "" && secret.TokenScheme == "" {
 		secret.TokenScheme = defaultCallbackTokenScheme
 	}
-	if strings.ContainsAny(secret.TokenScheme, "\r\n") {
-		return callbackSecret{}, errors.New("invalid token scheme")
+	for _, r := range secret.TokenScheme {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-') {
+			return callbackSecret{}, errors.New("invalid token scheme")
+		}
 	}
 	return secret, nil
 }
