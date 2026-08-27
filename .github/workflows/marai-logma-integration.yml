@@ -15,12 +15,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  integration:
+  request:
     runs-on: ubuntu-latest
-
+    outputs:
+      logma_branch: ${{ steps.request.outputs.logma_branch }}
+      marai_branch: ${{ steps.request.outputs.marai_branch }}
+      run_standalone_main: ${{ steps.request.outputs.run_standalone_main }}
+      redis_image: ${{ steps.request.outputs.redis_image }}
+      secret_db_count: ${{ steps.request.outputs.secret_db_count }}
     steps:
-      - name: Checkout automation request
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: automation
           sparse-checkout: |
@@ -51,15 +55,141 @@ jobs:
             echo "secret_db_count=$secret_db_count"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Require private-repo read token
-        env:
-          REPO_TOKEN: ${{ secrets.XD_DASH_REPO_READ_TOKEN }}
+  standalone-main:
+    needs: request
+    if: needs.request.outputs.run_standalone_main == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Logma main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: logma-main
+
+      - name: Unit test and build standalone main
         shell: bash
         run: |
           set -euo pipefail
-          if [ -z "$REPO_TOKEN" ]; then
-            echo "Missing repository secret XD_DASH_REPO_READ_TOKEN." >&2
-            echo "It must be able to read xd-dash/logma and xd-dash/marai." >&2
+          cd logma-main
+          go test ./...
+          go build -o "$RUNNER_TEMP/logma-main" ./cmd/api
+
+      - name: Start ordinary Redis
+        shell: bash
+        env:
+          REDIS_IMAGE: ${{ needs.request.outputs.redis_image }}
+        run: |
+          set -euo pipefail
+          docker run -d --name logma-standalone-redis             -p 16380:6379 "$REDIS_IMAGE"
+
+          for _ in $(seq 1 50); do
+            if docker exec logma-standalone-redis redis-cli PING | grep -q PONG; then
+              exit 0
+            fi
+            sleep 0.2
+          done
+          docker logs logma-standalone-redis >&2
+          exit 1
+
+      - name: Start callback receiver
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/standalone-callback.py" <<'PY'
+          from http.server import BaseHTTPRequestHandler, HTTPServer
+          from pathlib import Path
+
+          out = Path("/tmp/logma-standalone-callback")
+
+          class Handler(BaseHTTPRequestHandler):
+              def do_POST(self):
+                  length = int(self.headers.get("Content-Length", "0"))
+                  out.write_bytes(self.rfile.read(length))
+                  self.send_response(204)
+                  self.end_headers()
+
+              def log_message(self, fmt, *args):
+                  pass
+
+          HTTPServer(("127.0.0.1", 18083), Handler).serve_forever()
+          PY
+
+          python3 "$RUNNER_TEMP/standalone-callback.py"             >"$RUNNER_TEMP/standalone-callback.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/standalone-callback.pid"
+
+      - name: Exercise main against stock Redis
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          env             API_KEY=standalone-api-key             REDIS_URI=127.0.0.1:16380             REDIS_DB=0             "$RUNNER_TEMP/logma-main" 18082             >"$RUNNER_TEMP/logma-main.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/logma-main.pid"
+
+          for _ in $(seq 1 100); do
+            code="$(curl -sS -o /dev/null -w '%{http_code}'               -H 'X-API-Key: standalone-api-key'               http://127.0.0.1:18082/not-found || true)"
+            [ "$code" = "404" ] && break
+            sleep 0.2
+          done
+
+          response="$(curl -fsS             -H 'X-API-Key: standalone-api-key'             -H 'Content-Type: application/json'             -d '{"callbackURL":"http://127.0.0.1:18083/callback"}'             http://127.0.0.1:18082/channels/dev:global:logs:standalone/subscribe)"
+          jq -e '.subscriptionID != ""' <<<"$response" >/dev/null
+
+          group_id="$(curl -fsS             -X POST             -H 'X-API-Key: standalone-api-key'             http://127.0.0.1:18082/channels/groups/save)"
+          test -n "$group_id"
+
+          docker exec logma-standalone-redis redis-cli             PUBLISH dev:global:logs:standalone             '{"type":"Log","sentTimeUtc":"now","message":{"standalone":true},"parentNamespace":"dev","childNamespace":"global","channel":"logs:standalone"}'             >/dev/null
+
+          for _ in $(seq 1 50); do
+            [ -f /tmp/logma-standalone-callback ] && break
+            sleep 0.2
+          done
+          test -f /tmp/logma-standalone-callback
+
+          keys="$(docker exec logma-standalone-redis redis-cli --raw KEYS '*')"
+          grep -q '^active_subscriptions:' <<<"$keys"
+          grep -q '^subscription_groups:' <<<"$keys"
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          for pidfile in             "$RUNNER_TEMP/logma-main.pid"             "$RUNNER_TEMP/standalone-callback.pid"; do
+            [ -f "$pidfile" ] && kill -TERM "$(cat "$pidfile")" 2>/dev/null
+          done
+          docker rm -f logma-standalone-redis >/dev/null 2>&1
+
+  marai-integration:
+    needs: request
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint scoped GitHub App token
+        id: app-token
+        if: >-
+          ${{
+            (vars.CI_APP_ID != '' || secrets.CI_APP_ID != '') &&
+            secrets.CI_APP_PRIVATE_KEY != ''
+          }}
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CI_APP_ID || secrets.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: xd-dash
+          repositories: |
+            logma
+            marai
+
+      - name: Require cross-repo credential
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          FALLBACK_TOKEN: ${{ secrets.XD_DASH_REPO_READ_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$APP_TOKEN" ] && [ -z "$FALLBACK_TOKEN" ]; then
+            echo "No credential can read private xd-dash/marai." >&2
+            echo "Configure CI_APP_ID + CI_APP_PRIVATE_KEY (preferred)," >&2
+            echo "or XD_DASH_REPO_READ_TOKEN as a fallback." >&2
             exit 1
           fi
 
@@ -67,35 +197,39 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: xd-dash/logma
-          ref: ${{ steps.request.outputs.logma_branch }}
-          token: ${{ secrets.XD_DASH_REPO_READ_TOKEN }}
+          ref: ${{ needs.request.outputs.logma_branch }}
+          token: ${{ steps.app-token.outputs.token || secrets.XD_DASH_REPO_READ_TOKEN }}
           path: work/logma
+          persist-credentials: false
 
       - name: Checkout Marai test branch
         uses: actions/checkout@v4
         with:
           repository: xd-dash/marai
-          ref: ${{ steps.request.outputs.marai_branch }}
-          token: ${{ secrets.XD_DASH_REPO_READ_TOKEN }}
+          ref: ${{ needs.request.outputs.marai_branch }}
+          token: ${{ steps.app-token.outputs.token || secrets.XD_DASH_REPO_READ_TOKEN }}
           path: work/marai
+          persist-credentials: false
 
-      - name: Unit test selected branches
+      - name: Test and build selected Logma branch
         shell: bash
         run: |
           set -euo pipefail
-          (cd work/logma && go test ./...)
-          (cd work/marai && go test ./test -run '^TestKMS$' -count=1)
+          cd work/logma
+          go test ./...
+          go build -o "$RUNNER_TEMP/logma-marai" ./cmd/api
 
-      - name: Build Marai image
+      - name: Run Marai production-image integration suite
         shell: bash
         run: |
           set -euo pipefail
-          docker build -t marai-logma-integration:test work/marai
+          cd work/marai
+          MARAI_IMAGE_TAG=marai-logma-integration:test             MARAI_TEST_PORT=16379             test/run_docker.sh
 
       - name: Start Marai with managed ACL
         shell: bash
         env:
-          SECRET_DB_COUNT: ${{ steps.request.outputs.secret_db_count }}
+          SECRET_DB_COUNT: ${{ needs.request.outputs.secret_db_count }}
         run: |
           set -euo pipefail
 
@@ -164,17 +298,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          (
-            cd work/logma
-            env               API_KEY=integration-api-key               REDIS_URI=127.0.0.1:16379               REDIS_USERNAME=marai-logma               REDISCLI_AUTH='integration-logma-password-00000000000000001'               REDIS_DB=1               MARAI_CACHE_DB=1               MARAI_KMS_KEY_ID=logma               MARAI_CACHE_NAMESPACE=logma               go run ./cmd/api 18080
-          ) >"$RUNNER_TEMP/logma-marai.log" 2>&1 &
-
+          env             API_KEY=integration-api-key             REDIS_URI=127.0.0.1:16379             REDIS_USERNAME=marai-logma             REDISCLI_AUTH='integration-logma-password-00000000000000001'             REDIS_DB=1             MARAI_CACHE_DB=1             MARAI_KMS_KEY_ID=logma             MARAI_CACHE_NAMESPACE=logma             "$RUNNER_TEMP/logma-marai" 18080             >"$RUNNER_TEMP/logma-marai.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/logma-marai.pid"
 
           for _ in $(seq 1 100); do
-            if curl -fsS               -H 'X-API-Key: integration-api-key'               http://127.0.0.1:18080/channels/ >/dev/null; then
-              exit 0
-            fi
+            code="$(curl -sS -o /dev/null -w '%{http_code}'               -H 'X-API-Key: integration-api-key'               http://127.0.0.1:18080/not-found || true)"
+            [ "$code" = "404" ] && exit 0
             sleep 0.2
           done
 
@@ -195,7 +324,6 @@ jobs:
           subscription_id="$(jq -er '.subscriptionID' <<<"$response")"
 
           group_id="$(curl -fsS             -X POST             -H 'X-API-Key: integration-api-key'             http://127.0.0.1:18080/channels/groups/save)"
-
           test -n "$group_id"
 
           db0_size="$(
@@ -203,53 +331,40 @@ jobs:
           )"
           test "$db0_size" = "0"
 
-          raw="$(
-            docker exec               -e REDISCLI_AUTH='integration-admin-password-000000000000000001'               marai-logma-test               redis-cli --raw --user marai-admin -n 1               GET "__marai_cache:logma:active:$subscription_id"
-          )"
+          key="__marai_cache:logma:active:$subscription_id"
 
-          case "$raw" in
-            MRC1*) ;;
-            *)
-              echo "active subscription is not stored as MRC1 ciphertext" >&2
-              exit 1
-              ;;
-          esac
+          docker exec             -e REDISCLI_AUTH='integration-admin-password-000000000000000001'             marai-logma-test             redis-cli --raw --user marai-admin -n 1 GET "$key"             | xxd -p -l 4             | grep -Fx '4d524331'
 
-          if printf '%s' "$raw" | grep -Fq             'http://127.0.0.1:18081/callback'; then
+          if docker exec             -e REDISCLI_AUTH='integration-admin-password-000000000000000001'             marai-logma-test             redis-cli --raw --user marai-admin -n 1 GET "$key"             | grep -aFq 'http://127.0.0.1:18081/callback'; then
             echo "callback URL leaked into stored value" >&2
             exit 1
           fi
-          if printf '%s' "$raw" | grep -Fq 'short-lived-test-token'; then
+
+          if docker exec             -e REDISCLI_AUTH='integration-admin-password-000000000000000001'             marai-logma-test             redis-cli --raw --user marai-admin -n 1 GET "$key"             | grep -aFq 'short-lived-test-token'; then
             echo "callback token leaked into stored value" >&2
             exit 1
           fi
 
-          if docker exec             -e REDISCLI_AUTH='integration-logma-password-00000000000000001'             marai-logma-test             redis-cli --user marai-logma GET anything 2>&1 | grep -qv NOPERM; then
-            echo "marai-logma unexpectedly has raw GET" >&2
-            exit 1
-          fi
-
-          if docker exec             -e REDISCLI_AUTH='integration-logma-password-00000000000000001'             marai-logma-test             redis-cli --user marai-logma SCAN 0 2>&1 | grep -qv NOPERM; then
-            echo "marai-logma unexpectedly has SCAN" >&2
-            exit 1
-          fi
-
-          if docker exec             -e REDISCLI_AUTH='integration-logma-password-00000000000000001'             marai-logma-test             redis-cli --user marai-logma SELECT 0 2>&1 | grep -qv NOPERM; then
-            echo "marai-logma unexpectedly can SELECT DB 0" >&2
-            exit 1
-          fi
+          for command in 'GET anything' 'SCAN 0' 'SELECT 0'; do
+            output="$(
+              docker exec                 -e REDISCLI_AUTH='integration-logma-password-00000000000000001'                 marai-logma-test                 sh -c "redis-cli --user marai-logma $command" 2>&1 || true
+            )"
+            grep -q NOPERM <<<"$output" || {
+              echo "marai-logma unexpectedly allowed: $command" >&2
+              echo "$output" >&2
+              exit 1
+            }
+          done
 
           docker exec             -e REDISCLI_AUTH='integration-logma-password-00000000000000001'             marai-logma-test             redis-cli --user marai-logma             PUBLISH dev:global:logs:test             '{"type":"Log","sentTimeUtc":"now","message":{"ok":true},"parentNamespace":"dev","childNamespace":"global","channel":"logs:test"}'             >/dev/null
 
           for _ in $(seq 1 50); do
-            if [ -f /tmp/logma-callback ]; then
-              break
-            fi
+            [ -f /tmp/logma-callback ] && break
             sleep 0.2
           done
 
           test -f /tmp/logma-callback
-          head -n1 /tmp/logma-callback | grep -Fx             'Bearer short-lived-test-token'
+          head -n1 /tmp/logma-callback             | grep -Fx 'Bearer short-lived-test-token'
 
           printf '%s' "$group_id" > "$RUNNER_TEMP/group-id"
 
@@ -259,21 +374,19 @@ jobs:
           set -euo pipefail
 
           kill -TERM "$(cat "$RUNNER_TEMP/logma-marai.pid")"
-          wait "$(cat "$RUNNER_TEMP/logma-marai.pid")" 2>/dev/null || true
+          for _ in $(seq 1 50); do
+            kill -0 "$(cat "$RUNNER_TEMP/logma-marai.pid")" 2>/dev/null || break
+            sleep 0.1
+          done
 
           rm -f /tmp/logma-callback
 
-          (
-            cd work/logma
-            env               API_KEY=integration-api-key               REDIS_URI=127.0.0.1:16379               REDIS_USERNAME=marai-logma               REDISCLI_AUTH='integration-logma-password-00000000000000001'               REDIS_DB=1               MARAI_CACHE_DB=1               MARAI_KMS_KEY_ID=logma               MARAI_CACHE_NAMESPACE=logma               go run ./cmd/api 18080
-          ) >"$RUNNER_TEMP/logma-marai-restore.log" 2>&1 &
-
+          env             API_KEY=integration-api-key             REDIS_URI=127.0.0.1:16379             REDIS_USERNAME=marai-logma             REDISCLI_AUTH='integration-logma-password-00000000000000001'             REDIS_DB=1             MARAI_CACHE_DB=1             MARAI_KMS_KEY_ID=logma             MARAI_CACHE_NAMESPACE=logma             "$RUNNER_TEMP/logma-marai" 18080             >"$RUNNER_TEMP/logma-marai-restore.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/logma-marai.pid"
 
           for _ in $(seq 1 100); do
-            if curl -fsS               -H 'X-API-Key: integration-api-key'               http://127.0.0.1:18080/channels/ >/dev/null; then
-              break
-            fi
+            code="$(curl -sS -o /dev/null -w '%{http_code}'               -H 'X-API-Key: integration-api-key'               http://127.0.0.1:18080/not-found || true)"
+            [ "$code" = "404" ] && break
             sleep 0.2
           done
 
@@ -284,60 +397,19 @@ jobs:
           docker exec             -e REDISCLI_AUTH='integration-logma-password-00000000000000001'             marai-logma-test             redis-cli --user marai-logma             PUBLISH dev:global:logs:test             '{"type":"Log","sentTimeUtc":"now","message":{"restored":true},"parentNamespace":"dev","childNamespace":"global","channel":"logs:test"}'             >/dev/null
 
           for _ in $(seq 1 50); do
-            if [ -f /tmp/logma-callback ]; then
-              break
-            fi
+            [ -f /tmp/logma-callback ] && break
             sleep 0.2
           done
 
           test -f /tmp/logma-callback
-          head -n1 /tmp/logma-callback | grep -Fx             'Bearer short-lived-test-token'
-
-      - name: Verify standalone Logma main with ordinary Redis
-        if: steps.request.outputs.run_standalone_main == 'true'
-        shell: bash
-        env:
-          REDIS_IMAGE: ${{ steps.request.outputs.redis_image }}
-        run: |
-          set -euo pipefail
-
-          docker run -d --name logma-standalone-redis             -p 16380:6379 "$REDIS_IMAGE"
-
-          for _ in $(seq 1 50); do
-            if docker exec logma-standalone-redis redis-cli PING | grep -q PONG; then
-              break
-            fi
-            sleep 0.2
-          done
-
-          git -C work/logma fetch origin main
-          git -C work/logma worktree add "$RUNNER_TEMP/logma-main" origin/main
-
-          (
-            cd "$RUNNER_TEMP/logma-main"
-            env               API_KEY=standalone-api-key               REDIS_URI=127.0.0.1:16380               REDIS_DB=0               go run ./cmd/api 18082
-          ) >"$RUNNER_TEMP/logma-main.log" 2>&1 &
-
-          echo $! > "$RUNNER_TEMP/logma-main.pid"
-
-          for _ in $(seq 1 100); do
-            if curl -fsS               -H 'X-API-Key: standalone-api-key'               http://127.0.0.1:18082/channels/ >/dev/null; then
-              exit 0
-            fi
-            sleep 0.2
-          done
-
-          cat "$RUNNER_TEMP/logma-main.log" >&2
-          exit 1
+          head -n1 /tmp/logma-callback             | grep -Fx 'Bearer short-lived-test-token'
 
       - name: Cleanup
         if: always()
         shell: bash
         run: |
           set +e
-          for pidfile in             "$RUNNER_TEMP/logma-marai.pid"             "$RUNNER_TEMP/logma-main.pid"             "$RUNNER_TEMP/callback.pid"; do
-            if [ -f "$pidfile" ]; then
-              kill -TERM "$(cat "$pidfile")" 2>/dev/null
-            fi
+          for pidfile in             "$RUNNER_TEMP/logma-marai.pid"             "$RUNNER_TEMP/callback.pid"; do
+            [ -f "$pidfile" ] && kill -TERM "$(cat "$pidfile")" 2>/dev/null
           done
-          docker rm -f marai-logma-test logma-standalone-redis             >/dev/null 2>&1
+          docker rm -f marai-logma-test >/dev/null 2>&1
