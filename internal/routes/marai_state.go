@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"sync"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -43,7 +42,6 @@ type maraiStateStore struct {
 	db        int
 	keyID     string
 	namespace string
-	mu        sync.Mutex
 }
 
 func newMaraiStateStore(client *redis.Client) *maraiStateStore {
@@ -146,6 +144,82 @@ func (s *maraiStateStore) deleteActive(ctx context.Context, id string) error {
 	return s.cacheDelete(ctx, "active:"+id)
 }
 
+func (s *maraiStateStore) indexAdd(ctx context.Context, index, member string) error {
+	if _, err := s.client.FCall(
+		ctx,
+		"marai_index_add",
+		[]string{},
+		s.keyID,
+		s.db,
+		s.namespace,
+		index,
+		member,
+	).Result(); err != nil {
+		return fmt.Errorf("marai index add %q/%q: %w", index, member, err)
+	}
+	return nil
+}
+
+func (s *maraiStateStore) indexRemove(ctx context.Context, index, member string) error {
+	if _, err := s.client.FCall(
+		ctx,
+		"marai_index_remove",
+		[]string{},
+		s.keyID,
+		s.db,
+		s.namespace,
+		index,
+		member,
+	).Result(); err != nil {
+		return fmt.Errorf("marai index remove %q/%q: %w", index, member, err)
+	}
+	return nil
+}
+
+func (s *maraiStateStore) indexList(ctx context.Context, index string, cursor, count int64) ([]string, int64, error) {
+	result, err := s.client.FCall(
+		ctx,
+		"marai_index_list",
+		[]string{},
+		s.keyID,
+		s.db,
+		s.namespace,
+		index,
+		cursor,
+		count,
+	).Result()
+	if err != nil {
+		return nil, 0, fmt.Errorf("marai index list %q: %w", index, err)
+	}
+
+	parts, ok := result.([]interface{})
+	if !ok || len(parts) != 2 {
+		return nil, 0, fmt.Errorf("marai index list %q returned %T, want two-element array", index, result)
+	}
+
+	next, ok := parts[0].(int64)
+	if !ok {
+		return nil, 0, fmt.Errorf("marai index list %q returned cursor %T, want integer", index, parts[0])
+	}
+
+	rawMembers, ok := parts[1].([]interface{})
+	if !ok {
+		return nil, 0, fmt.Errorf("marai index list %q returned members %T, want array", index, parts[1])
+	}
+	members := make([]string, 0, len(rawMembers))
+	for _, raw := range rawMembers {
+		switch value := raw.(type) {
+		case string:
+			members = append(members, value)
+		case []byte:
+			members = append(members, string(value))
+		default:
+			return nil, 0, fmt.Errorf("marai index list %q returned member %T, want string", index, raw)
+		}
+	}
+	return members, next, nil
+}
+
 func (s *maraiStateStore) saveGroup(ctx context.Context, group storedGroup) error {
 	if group.Version == 0 {
 		group.Version = 1
@@ -159,29 +233,14 @@ func (s *maraiStateStore) saveGroup(ctx context.Context, group storedGroup) erro
 	if err != nil {
 		return err
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if err := s.cacheSet(ctx, "group:"+group.ID, payload, 0); err != nil {
 		return err
 	}
-
-	catalog, err := s.loadCatalog(ctx)
-	if err != nil {
+	if err := s.indexAdd(ctx, "groups", group.ID); err != nil {
+		_ = s.cacheDelete(context.Background(), "group:"+group.ID)
 		return err
 	}
-	for _, id := range catalog {
-		if id == group.ID {
-			return nil
-		}
-	}
-	catalog = append(catalog, group.ID)
-	catalogPayload, err := json.Marshal(catalog)
-	if err != nil {
-		return err
-	}
-	return s.cacheSet(ctx, "groups", catalogPayload, 0)
+	return nil
 }
 
 func (s *maraiStateStore) loadGroup(ctx context.Context, id string) (storedGroup, bool, error) {
@@ -199,23 +258,6 @@ func (s *maraiStateStore) loadGroup(ctx context.Context, id string) (storedGroup
 	return group, true, nil
 }
 
-func (s *maraiStateStore) listGroups(ctx context.Context) ([]string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.loadCatalog(ctx)
-}
-
-func (s *maraiStateStore) loadCatalog(ctx context.Context) ([]string, error) {
-	payload, err := s.cacheGet(ctx, "groups")
-	if err != nil {
-		return nil, err
-	}
-	if payload == nil {
-		return []string{}, nil
-	}
-	var ids []string
-	if err := json.Unmarshal(payload, &ids); err != nil {
-		return nil, fmt.Errorf("decode group catalog: %w", err)
-	}
-	return ids, nil
+func (s *maraiStateStore) listGroups(ctx context.Context, cursor, count int64) ([]string, int64, error) {
+	return s.indexList(ctx, "groups", cursor, count)
 }
