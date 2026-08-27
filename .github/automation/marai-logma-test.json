@@ -3,5 +3,6 @@
   "marai_branch": "codex/logma-acl-overlay",
   "run_standalone_main": true,
   "redis_image": "redis:8-alpine",
-  "marai_secret_db_count": 8
+  "marai_secret_db_count": 8,
+  "request": "test-marai-logma-coupling"
 }
