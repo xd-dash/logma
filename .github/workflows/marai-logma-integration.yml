@@ -163,35 +163,41 @@ jobs:
     needs: request
     runs-on: ubuntu-latest
     steps:
-      - name: Mint scoped GitHub App token
-        id: app-token
-        if: >-
-          ${{
-            (vars.CI_APP_ID != '' || secrets.CI_APP_ID != '') &&
-            secrets.CI_APP_PRIVATE_KEY != ''
-          }}
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ vars.CI_APP_ID || secrets.CI_APP_ID }}
-          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
-          owner: xd-dash
-          repositories: |
-            logma
-            marai
-
-      - name: Require cross-repo credential
+      - name: Select cross-repo credential
+        id: credential
         env:
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          VAR_APP_ID: ${{ vars.CI_APP_ID }}
+          SECRET_APP_ID: ${{ secrets.CI_APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.CI_APP_PRIVATE_KEY }}
           FALLBACK_TOKEN: ${{ secrets.XD_DASH_REPO_READ_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          if [ -z "$APP_TOKEN" ] && [ -z "$FALLBACK_TOKEN" ]; then
+          app_id="$VAR_APP_ID"
+          [ -n "$app_id" ] || app_id="$SECRET_APP_ID"
+
+          if [ -n "$app_id" ] && [ -n "$APP_PRIVATE_KEY" ]; then
+            echo "use_app=true" >> "$GITHUB_OUTPUT"
+            echo "use_pat=false" >> "$GITHUB_OUTPUT"
+          elif [ -n "$FALLBACK_TOKEN" ]; then
+            echo "use_app=false" >> "$GITHUB_OUTPUT"
+            echo "use_pat=true" >> "$GITHUB_OUTPUT"
+          else
             echo "No credential can read private xd-dash/marai." >&2
             echo "Configure CI_APP_ID + CI_APP_PRIVATE_KEY (preferred)," >&2
             echo "or XD_DASH_REPO_READ_TOKEN as a fallback." >&2
             exit 1
           fi
+
+      - name: Mint scoped GitHub App token
+        id: app-token
+        if: steps.credential.outputs.use_app == 'true'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CI_APP_ID || secrets.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: xd-dash
+          repositories: logma,marai
 
       - name: Checkout Logma test branch
         uses: actions/checkout@v4
