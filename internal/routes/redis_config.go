@@ -2,7 +2,6 @@ package routes
 
 import (
 	"os"
-	"strconv"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -26,18 +25,13 @@ func redisOptionsFromEnv() *redis.Options {
 		}
 	}
 
-	db := 0
-	if raw := os.Getenv("REDIS_DB"); raw != "" {
-		if parsed, err := strconv.Atoi(raw); err == nil && parsed >= 0 {
-			db = parsed
-		}
-	}
+	scope := scopeConfigFromEnv()
 
 	return &redis.Options{
 		Network:  network,
 		Addr:     addr,
 		Username: os.Getenv("REDIS_USERNAME"),
 		Password: os.Getenv("REDISCLI_AUTH"),
-		DB:       db,
+		DB:       scope.DB,
 	}
 }
