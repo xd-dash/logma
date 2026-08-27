@@ -90,7 +90,7 @@ func (s *maraiStateStore) cacheSet(ctx context.Context, key string, value []byte
 }
 
 func (s *maraiStateStore) cacheGet(ctx context.Context, key string) ([]byte, error) {
-	value, err := s.client.FCall(
+	result, err := s.client.FCall(
 		ctx,
 		"marai_cache_get",
 		[]string{},
@@ -98,14 +98,22 @@ func (s *maraiStateStore) cacheGet(ctx context.Context, key string) ([]byte, err
 		s.db,
 		s.namespace,
 		key,
-	).Bytes()
+	).Result()
 	if errors.Is(err, redis.Nil) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("marai cache get %q: %w", key, err)
 	}
-	return value, nil
+
+	switch value := result.(type) {
+	case string:
+		return []byte(value), nil
+	case []byte:
+		return value, nil
+	default:
+		return nil, fmt.Errorf("marai cache get %q returned %T, want bulk string", key, result)
+	}
 }
 
 func (s *maraiStateStore) cacheDelete(ctx context.Context, key string) error {
