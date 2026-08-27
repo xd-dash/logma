@@ -1,0 +1,5 @@
+{
+  "logma_branch": "main",
+  "sus_redis_ref": "main",
+  "request": "standalone-logma-local"
+}
