@@ -7,3 +7,10 @@ Producers may emit namespaced events such as `secret.updated`, `config.updated`,
 Redis Pub/Sub is a low-latency notification transport, not a durable replication log. Regional convergence must eventually pair fast notification with a durable catch-up transport such as Redis Streams or Google Pub/Sub. Logma must keep the transport behind an event-bus abstraction so callers do not depend directly on Pub/Sub semantics.
 
 No event payload should assume marai master-key continuity across regions. Portable durable secrets require a separately designed encrypted representation and regional re-wrapping strategy.
+
+
+## Marai state boundary
+
+Callback destination state and callback access tokens are not part of the Pub/Sub event
+payload. They are stored separately through the encrypted Marai cache interface and are
+only materialized when dispatching the callback. See [marai-state.md](marai-state.md).
