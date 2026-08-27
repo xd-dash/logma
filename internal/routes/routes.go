@@ -449,11 +449,18 @@ func extractSubscriptionID(key string) string {
 }
 
 func activeChannelsHandler(w http.ResponseWriter, r *http.Request) {
-	channels, err := client.PubSubChannels(rootCtx, "").Result()
-	if err != nil {
-		http.Error(w, "Error retrieving Redis channels", http.StatusInternalServerError)
-		return
+	active := manager.snapshot()
+	channels := make([]string, 0, len(active))
+	seen := make(map[string]struct{}, len(active))
+	for _, info := range active {
+		if _, ok := seen[info.Channel]; ok {
+			continue
+		}
+		seen[info.Channel] = struct{}{}
+		channels = append(channels, info.Channel)
 	}
+	sort.Strings(channels)
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(channels)
 }
