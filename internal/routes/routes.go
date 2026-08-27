@@ -1058,9 +1058,9 @@ func loadSubscriptionGroup(
 	}
 
 	response := map[string]interface{}{
-		"groupID":        groupID,
+		"groupID":       groupID,
 		"subscriptions": loaded,
-		"message":        "Subscription group loaded",
+		"message":       "Subscription group loaded",
 	}
 
 	w.Header().Set(
