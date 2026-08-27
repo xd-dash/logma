@@ -25,11 +25,14 @@ The Marai cache namespace defaults to `logma`.
 Encrypted cache records:
 
 - `active:<subscription-id>` — one active subscription descriptor.
-- `group:<group-id>` — one saved group manifest containing its subscriptions.
-- `groups` — the saved-group catalog.
+- `group:<group-id>` — one independently encrypted saved group manifest.
 
-Active-subscription discovery no longer uses Redis `SCAN`. The running process owns
-the authoritative live subscription map and snapshots it when saving a group.
+Saved-group discovery uses the Marai index named `groups`, not an encrypted global
+JSON catalog. The index contains group IDs only and is paged with a numeric
+`cursor`/`count`; each group payload remains a separate MRC1 record.
+
+Active-subscription discovery also does not use Redis `SCAN`. The running process
+owns the authoritative live subscription map and snapshots it when saving a group.
 
 A group manifest contains the channel and callback secret for every member. The
 callback secret contains:
@@ -57,14 +60,17 @@ URLs and tokens do not travel in Redis Pub/Sub messages. They travel between Log
 Marai only as arguments/results of the cache functions. Prefer a Unix-domain Redis
 socket for colocated deployments; use Redis TLS if that transport ever becomes remote.
 
-## Catalog concurrency
+## Group index
 
-The group catalog is one encrypted manifest. Mutations are serialized in-process to
-avoid lost updates in the supported single-Logma-process deployment profile.
+Group membership is maintained by Marai's DB-pinned index API. `saveGroup` writes
+the encrypted `group:<id>` record first and then idempotently adds the group ID to
+the `groups` index. If the index add fails, Logma removes the newly written group
+record rather than returning success with an undiscoverable group.
 
-If Logma becomes an active/active multi-process writer, the Marai API should gain an
-atomic compare-and-set or set/index primitive and the catalog should move to that
-server-side operation. Do not reintroduce Redis `SCAN` as the solution.
+Listing is bounded and paginated through `GET /channels/groups?cursor=<n>&count=<n>`.
+The default count is 100 and the maximum is 1000. The cursor is an offset into the
+sorted ID index and is not a snapshot cursor; concurrent additions/removals may shift
+subsequent pages. Do not reintroduce Redis keyspace `SCAN` for discovery.
 
 ## Bootstrap
 
