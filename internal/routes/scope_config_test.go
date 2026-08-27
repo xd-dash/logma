@@ -52,12 +52,12 @@ func TestMaraiScopedArgumentsExcludeProviderMetadata(t *testing.T) {
 		ExternalProject: "customer-prod",
 	}
 
-	wantEncrypt := []any{"FCALL", "kms_scope_encrypt", 0, "scope-7f85", "logma", "subscriptions", []byte("secret")}
+	wantEncrypt := []any{"FCALL", "kms_encrypt", 0, "scope-7f85", "logma", "subscriptions", []byte("secret")}
 	if got := scope.maraiEncryptArgs([]byte("secret")); !reflect.DeepEqual(got, wantEncrypt) {
 		t.Fatalf("encrypt args=%#v", got)
 	}
 
-	wantDecrypt := []any{"FCALL", "kms_scope_decrypt", 0, "scope-7f85", "logma", "subscriptions", []byte("MRA2")}
+	wantDecrypt := []any{"FCALL", "kms_decrypt", 0, "scope-7f85", "logma", "subscriptions", []byte("MRA2")}
 	if got := scope.maraiDecryptArgs([]byte("MRA2")); !reflect.DeepEqual(got, wantDecrypt) {
 		t.Fatalf("decrypt args=%#v", got)
 	}
