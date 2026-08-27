@@ -26,9 +26,9 @@ func redisOptionsFromEnv() *redis.Options {
 		}
 	}
 
-	db := 0
+	db := 1
 	if raw := os.Getenv("REDIS_DB"); raw != "" {
-		if parsed, err := strconv.Atoi(raw); err == nil && parsed >= 0 {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed >= 1 && parsed <= 15 {
 			db = parsed
 		}
 	}
