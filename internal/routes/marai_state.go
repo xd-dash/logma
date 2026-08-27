@@ -26,12 +26,14 @@ type callbackSecret struct {
 }
 
 type storedSubscription struct {
+	Version  int            `json:"version"`
 	ID       string         `json:"id"`
 	Channel  string         `json:"channel"`
 	Callback callbackSecret `json:"callback"`
 }
 
 type storedGroup struct {
+	Version       int                  `json:"version"`
 	ID            string               `json:"id"`
 	Subscriptions []storedSubscription `json:"subscriptions"`
 }
@@ -121,6 +123,9 @@ func (s *maraiStateStore) cacheDelete(ctx context.Context, key string) error {
 }
 
 func (s *maraiStateStore) saveActive(ctx context.Context, sub storedSubscription) error {
+	if sub.Version == 0 {
+		sub.Version = 1
+	}
 	payload, err := json.Marshal(sub)
 	if err != nil {
 		return err
@@ -133,6 +138,14 @@ func (s *maraiStateStore) deleteActive(ctx context.Context, id string) error {
 }
 
 func (s *maraiStateStore) saveGroup(ctx context.Context, group storedGroup) error {
+	if group.Version == 0 {
+		group.Version = 1
+	}
+	for i := range group.Subscriptions {
+		if group.Subscriptions[i].Version == 0 {
+			group.Subscriptions[i].Version = 1
+		}
+	}
 	payload, err := json.Marshal(group)
 	if err != nil {
 		return err
