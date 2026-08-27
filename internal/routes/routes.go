@@ -18,11 +18,7 @@ import (
 )
 
 var (
-	client = redis.NewClient(&redis.Options{
-		Addr:     os.Getenv("REDIS_URI"),
-		Password: os.Getenv("REDISCLI_AUTH"),
-		DB:       0,
-	})
+	client = redis.NewClient(redisOptionsFromEnv())
 
 	rootCtx, rootCancel = context.WithCancel(context.Background())
 
