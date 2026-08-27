@@ -55,14 +55,14 @@ func scopeConfigFromEnv() scopeConfig {
 
 func (s scopeConfig) maraiEncryptArgs(plaintext []byte) []any {
 	return []any{
-		"FCALL", "kms_scope_encrypt", 0,
+		"FCALL", "kms_encrypt", 0,
 		s.ID, s.MaraiKeyID, s.Namespace, plaintext,
 	}
 }
 
 func (s scopeConfig) maraiDecryptArgs(envelope []byte) []any {
 	return []any{
-		"FCALL", "kms_scope_decrypt", 0,
+		"FCALL", "kms_decrypt", 0,
 		s.ID, s.MaraiKeyID, s.Namespace, envelope,
 	}
 }
