@@ -89,7 +89,7 @@ type subscriptionManager struct {
 	unregisterCh chan string
 	cancelCh     chan cancelSubscription
 	shutdownCh   chan chan struct{}
-	done       chan struct{}
+	done         chan struct{}
 }
 
 type registerSubscription struct {
@@ -156,7 +156,7 @@ func newSubscriptionManager() *subscriptionManager {
 		unregisterCh: make(chan string),
 		cancelCh:     make(chan cancelSubscription),
 		shutdownCh:   make(chan chan struct{}),
-		done:       make(chan struct{}),
+		done:         make(chan struct{}),
 	}
 
 	go m.run()
