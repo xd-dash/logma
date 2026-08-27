@@ -85,10 +85,10 @@ type callbackDispatcher struct {
 }
 
 type subscriptionManager struct {
-	register   chan registerSubscription
-	unregister chan string
-	cancel     chan cancelSubscription
-	shutdown   chan chan struct{}
+	registerCh   chan registerSubscription
+	unregisterCh chan string
+	cancelCh     chan cancelSubscription
+	shutdownCh   chan chan struct{}
 	done       chan struct{}
 }
 
@@ -152,10 +152,10 @@ func (d *callbackDispatcher) close() {
 
 func newSubscriptionManager() *subscriptionManager {
 	m := &subscriptionManager{
-		register:   make(chan registerSubscription),
-		unregister: make(chan string),
-		cancel:     make(chan cancelSubscription),
-		shutdown:   make(chan chan struct{}),
+		registerCh:   make(chan registerSubscription),
+		unregisterCh: make(chan string),
+		cancelCh:     make(chan cancelSubscription),
+		shutdownCh:   make(chan chan struct{}),
 		done:       make(chan struct{}),
 	}
 
@@ -175,7 +175,7 @@ func (m *subscriptionManager) run() {
 
 	for {
 		select {
-		case registration := <-m.register:
+		case registration := <-m.registerCh:
 			if shuttingDown {
 				registration.response <- errSubscriptionManagerStopped
 				continue
@@ -186,7 +186,7 @@ func (m *subscriptionManager) run() {
 
 			registration.response <- nil
 
-		case key := <-m.unregister:
+		case key := <-m.unregisterCh:
 			if _, exists := subscriptions[key]; !exists {
 				continue
 			}
@@ -203,7 +203,7 @@ func (m *subscriptionManager) run() {
 				return
 			}
 
-		case request := <-m.cancel:
+		case request := <-m.cancelCh:
 			cancel, exists := subscriptions[request.key]
 
 			if !exists {
@@ -214,7 +214,7 @@ func (m *subscriptionManager) run() {
 			cancel()
 			request.response <- true
 
-		case complete := <-m.shutdown:
+		case complete := <-m.shutdownCh:
 			if shuttingDown {
 				if active == 0 {
 					close(complete)
@@ -257,7 +257,7 @@ func (m *subscriptionManager) register(
 	case <-m.done:
 		return errSubscriptionManagerStopped
 
-	case m.register <- request:
+	case m.registerCh <- request:
 		return <-response
 	}
 }
@@ -267,7 +267,7 @@ func (m *subscriptionManager) unregister(key string) {
 	case <-m.done:
 		return
 
-	case m.unregister <- key:
+	case m.unregisterCh <- key:
 	}
 }
 
@@ -285,7 +285,7 @@ func (m *subscriptionManager) cancelSubscription(
 	case <-m.done:
 		return false
 
-	case m.cancel <- request:
+	case m.cancelCh <- request:
 		return <-response
 	}
 }
@@ -302,7 +302,7 @@ func (m *subscriptionManager) shutdown(
 	case <-ctx.Done():
 		return ctx.Err()
 
-	case m.shutdown <- complete:
+	case m.shutdownCh <- complete:
 	}
 
 	select {
