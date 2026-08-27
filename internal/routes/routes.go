@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -621,15 +622,38 @@ func loadSubscriptionGroup(w http.ResponseWriter, r *http.Request) {
 }
 
 func listSubscriptionGroups(w http.ResponseWriter, r *http.Request) {
-	groupIDs, err := stateStore.listGroups(rootCtx)
+	cursor := int64(0)
+	count := int64(100)
+
+	if raw := r.URL.Query().Get("cursor"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 0 {
+			http.Error(w, "cursor must be a non-negative integer", http.StatusBadRequest)
+			return
+		}
+		cursor = parsed
+	}
+	if raw := r.URL.Query().Get("count"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 1 || parsed > 1000 {
+			http.Error(w, "count must be between 1 and 1000", http.StatusBadRequest)
+			return
+		}
+		count = parsed
+	}
+
+	groupIDs, nextCursor, err := stateStore.listGroups(rootCtx, cursor, count)
 	if err != nil {
 		fmt.Printf("Error listing encrypted subscription groups: %v\n", err)
 		http.Error(w, "Error retrieving subscription groups", http.StatusInternalServerError)
 		return
 	}
-	sort.Strings(groupIDs)
+
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(groupIDs)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"groups":     groupIDs,
+		"nextCursor": nextCursor,
+	})
 }
 
 func stopSubscription(subscriptionKey string) bool {
