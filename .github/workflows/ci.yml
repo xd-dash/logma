@@ -27,9 +27,9 @@ jobs:
 
       - name: Check formatting
         run: |
-          files="$(gofmt -l .)"
-          if [ -n "$files" ]; then
-            printf 'The following Go files are not gofmt-formatted:\n%s\n' "$files"
+          diff="$(gofmt -d .)"
+          if [ -n "$diff" ]; then
+            printf 'gofmt diff:\n%s\n' "$diff"
             exit 1
           fi
 
