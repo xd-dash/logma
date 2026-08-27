@@ -121,6 +121,7 @@ func (s *maraiStateStore) cacheDelete(ctx context.Context, key string) error {
 		ctx,
 		"marai_cache_delete",
 		[]string{},
+		s.keyID,
 		s.db,
 		s.namespace,
 		key,
