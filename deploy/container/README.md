@@ -94,3 +94,25 @@ nginx
 
 This removes the deprecated v3 compatibility layout under
 `s6-rc.d/user/contents.d`.
+
+
+## Shared Redis socket permissions
+
+The Redis daemon runs as a dedicated `redis` user/group with numeric GID
+`6379`. The shared socket directory is owned by `6379:6379` with mode
+`0770`, and Redis creates `redis.sock` with mode `0770`.
+
+A sibling container therefore does not need to run as root. It can mount the
+same volume and run with group `6379`:
+
+```sh
+docker run --rm \
+  --user 10001:6379 \
+  -v logma-redis-socket:/run/logma-redis \
+  --entrypoint redis-cli \
+  logma-cell:latest \
+  -s /run/logma-redis/redis.sock ping
+```
+
+This is host-local IPC through the container volume layer. It does not traverse
+nginx, a published port, or the host TCP stack.
