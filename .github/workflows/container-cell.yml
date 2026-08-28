@@ -30,17 +30,18 @@ jobs:
           path: .deps/nix-alpine
 
       - name: Prepare Nix builder image
-        uses: dash-xd/nix-alpine@2bb869e3f4ccaf9f5b97d21aafd08777714393bb
+        uses: dash-xd/nix-alpine@da29e4e0abe55b3c790b17c6684e024b710a34ff
         with:
           image-name: nix-alpine:logma-cell
           cache-key: nix-alpine-logma-cell
           toolbox-path: .deps/nix-alpine
 
       - name: Build OCI archive with cached named Nix volumes
-        uses: dash-xd/nix-alpine/volume-cache@2bb869e3f4ccaf9f5b97d21aafd08777714393bb
+        uses: dash-xd/nix-alpine/volume-cache@da29e4e0abe55b3c790b17c6684e024b710a34ff
         with:
           image-name: nix-alpine:logma-cell
           cache-key: logma-cell-${{ hashFiles('flake.nix', 'go.mod', 'go.sum', 'cmd/**/*.go', 'internal/**/*.go') }}
+          cache-restore-prefix: logma-cell-
           store-volume: logma-cell-nix-store
           user-cache-volume: logma-cell-nix-user-cache
           command: |
