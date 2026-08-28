@@ -28,7 +28,7 @@
         pname = "logma";
         version = "0.1.0";
         src = self;
-        vendorHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        vendorHash = "sha256-N7SJVbkjtlhr+GDxJs4vsskr39qJlaeuzUKHZ7pcW5I=";
         subPackages = [ "cmd/api" ];
         postInstall = ''
           mv "$out/bin/api" "$out/bin/logma"
