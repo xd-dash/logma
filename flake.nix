@@ -49,6 +49,16 @@
         dir /run/redis
         EOF
 
+        cat > "$out/etc/passwd" <<'EOF'
+        root:x:0:0:root:/root:/bin/sh
+        nobody:x:65534:65534:nobody:/var/empty:/sbin/nologin
+        EOF
+
+        cat > "$out/etc/group" <<'EOF'
+        root:x:0:
+        nogroup:x:65534:
+        EOF
+
         cat > "$out/etc/nginx/nginx.conf" <<'EOF'
         worker_processes 1;
         error_log /dev/stderr notice;
@@ -58,6 +68,8 @@
 
         http {
           access_log /dev/stdout;
+          client_body_temp_path /tmp/nginx-client;
+          proxy_temp_path /tmp/nginx-proxy;
           server {
             listen 8080;
             location / {
