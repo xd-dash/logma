@@ -66,13 +66,14 @@ jobs:
 
           test -s /tmp/channels.json
           docker exec logma-cell-smoke test -S /run/redis/redis.sock
+          docker exec logma-cell-smoke redis-cli -s /run/redis/redis.sock ping | grep -qx PONG
 
-          if docker exec logma-cell-smoke sh -c 'ss -ltn 2>/dev/null | grep -q ":6379 "'; then
-            echo "::error::Redis TCP port unexpectedly listening"
+          if docker exec logma-cell-smoke redis-cli -h 127.0.0.1 -p 6379 ping >/dev/null 2>&1; then
+            echo "::error::Redis TCP port unexpectedly accepting connections"
             exit 1
           fi
 
-          echo "::notice::nginx -> logma -> Redis unix socket smoke passed"
+          echo "::notice::nginx -> logma -> Redis unix socket smoke passed; Redis TCP is disabled"
 
       - name: Upload OCI archive
         uses: actions/upload-artifact@v4
