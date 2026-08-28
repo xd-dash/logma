@@ -174,6 +174,12 @@ func (rt *Runtime) handlePublish(message runtimeMessage) {
 	if publish.Channel == "" {
 		publish.Channel = message.channel
 	}
+	// Producers using pubsub.Runtime.Publish send their application event as
+	// raw JSON. Preserve the existing {channel,data} envelope when present,
+	// otherwise wrap the complete Redis payload as SSE data.
+	if len(publish.Data) == 0 {
+		publish.Data = json.RawMessage(message.payload)
+	}
 	select {
 	case rt.events <- publish:
 	default:
