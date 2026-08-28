@@ -51,11 +51,13 @@
 
         cat > "$out/etc/passwd" <<'EOF'
         root:x:0:0:root:/root:/bin/sh
+        redis:x:6379:6379:redis:/run/logma-redis:/sbin/nologin
         nobody:x:65534:65534:nobody:/var/empty:/sbin/nologin
         EOF
 
         cat > "$out/etc/group" <<'EOF'
         root:x:0:
+        redis:x:6379:
         nogroup:x:65534:
         EOF
 
@@ -84,9 +86,11 @@
         EOF
 
         echo oneshot > "$out/etc/s6-overlay/s6-rc.d/init-dirs/type"
+        touch "$out/etc/s6-overlay/s6-rc.d/init-dirs/dependencies.d/base"
         cat > "$out/etc/s6-overlay/s6-rc.d/init-dirs/up" <<'EOF'
         #!/command/execlineb -P
         foreground { mkdir -p /run/logma-redis }
+        foreground { chown 6379:6379 /run/logma-redis }
         foreground { chmod 0770 /run/logma-redis }
         foreground { mkdir -p /var/lib/nginx }
         foreground { mkdir -p /var/log/nginx }
@@ -98,7 +102,7 @@
         touch "$out/etc/s6-overlay/s6-rc.d/redis/dependencies.d/init-dirs"
         cat > "$out/etc/s6-overlay/s6-rc.d/redis/run" <<EOF
         #!/command/with-contenv sh
-        exec ${pkgs.redis}/bin/redis-server /etc/logma/redis.conf
+        exec /command/s6-setuidgid redis ${pkgs.redis}/bin/redis-server /etc/logma/redis.conf
         EOF
         chmod +x "$out/etc/s6-overlay/s6-rc.d/redis/run"
 
