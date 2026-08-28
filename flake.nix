@@ -36,7 +36,7 @@
       };
 
       runtimeRoot = pkgs.runCommand "logma-runtime-root" {} ''
-        mkdir -p           "$out/var"           "$out/tmp"           "$out/etc/logma"           "$out/etc/nginx"           "$out/etc/s6-overlay/s6-rc.d/user/contents.d"           "$out/etc/s6-overlay/s6-rc.d/init-dirs"           "$out/etc/s6-overlay/s6-rc.d/redis/dependencies.d"           "$out/etc/s6-overlay/s6-rc.d/logma/dependencies.d"           "$out/etc/s6-overlay/s6-rc.d/nginx/dependencies.d"
+        mkdir -p           "$out/var"           "$out/tmp"           "$out/etc/logma"           "$out/etc/nginx"           "$out/etc/s6-overlay/user-bundles.d/user/contents.d"           "$out/etc/s6-overlay/s6-rc.d/init-dirs"           "$out/etc/s6-overlay/s6-rc.d/redis/dependencies.d"           "$out/etc/s6-overlay/s6-rc.d/logma/dependencies.d"           "$out/etc/s6-overlay/s6-rc.d/nginx/dependencies.d"
         chmod 1777 "$out/tmp"
 
         cat > "$out/etc/logma/redis.conf" <<'EOF'
@@ -44,9 +44,9 @@
         protected-mode yes
         save ""
         appendonly no
-        unixsocket /run/redis/redis.sock
+        unixsocket /run/logma-redis/redis.sock
         unixsocketperm 0770
-        dir /run/redis
+        dir /run/logma-redis
         EOF
 
         cat > "$out/etc/passwd" <<'EOF'
@@ -86,14 +86,15 @@
         echo oneshot > "$out/etc/s6-overlay/s6-rc.d/init-dirs/type"
         cat > "$out/etc/s6-overlay/s6-rc.d/init-dirs/up" <<'EOF'
         #!/command/execlineb -P
-        foreground { mkdir -p /run/redis }
-        foreground { chmod 0770 /run/redis }
+        foreground { mkdir -p /run/logma-redis }
+        foreground { chmod 0770 /run/logma-redis }
         foreground { mkdir -p /var/lib/nginx }
         foreground { mkdir -p /var/log/nginx }
         EOF
         chmod +x "$out/etc/s6-overlay/s6-rc.d/init-dirs/up"
 
         echo longrun > "$out/etc/s6-overlay/s6-rc.d/redis/type"
+        touch "$out/etc/s6-overlay/s6-rc.d/redis/dependencies.d/base"
         touch "$out/etc/s6-overlay/s6-rc.d/redis/dependencies.d/init-dirs"
         cat > "$out/etc/s6-overlay/s6-rc.d/redis/run" <<EOF
         #!/command/with-contenv sh
@@ -102,16 +103,18 @@
         chmod +x "$out/etc/s6-overlay/s6-rc.d/redis/run"
 
         echo longrun > "$out/etc/s6-overlay/s6-rc.d/logma/type"
+        touch "$out/etc/s6-overlay/s6-rc.d/logma/dependencies.d/base"
         touch "$out/etc/s6-overlay/s6-rc.d/logma/dependencies.d/redis"
         cat > "$out/etc/s6-overlay/s6-rc.d/logma/run" <<EOF
         #!/command/with-contenv sh
         export REDIS_NETWORK=unix
-        export REDIS_SOCKET=/run/redis/redis.sock
+        export REDIS_SOCKET=/run/logma-redis/redis.sock
         exec ${logma}/bin/logma 18080
         EOF
         chmod +x "$out/etc/s6-overlay/s6-rc.d/logma/run"
 
         echo longrun > "$out/etc/s6-overlay/s6-rc.d/nginx/type"
+        touch "$out/etc/s6-overlay/s6-rc.d/nginx/dependencies.d/base"
         touch "$out/etc/s6-overlay/s6-rc.d/nginx/dependencies.d/logma"
         cat > "$out/etc/s6-overlay/s6-rc.d/nginx/run" <<EOF
         #!/command/with-contenv sh
@@ -119,10 +122,10 @@
         EOF
         chmod +x "$out/etc/s6-overlay/s6-rc.d/nginx/run"
 
-        touch "$out/etc/s6-overlay/s6-rc.d/user/contents.d/init-dirs"
-        touch "$out/etc/s6-overlay/s6-rc.d/user/contents.d/redis"
-        touch "$out/etc/s6-overlay/s6-rc.d/user/contents.d/logma"
-        touch "$out/etc/s6-overlay/s6-rc.d/user/contents.d/nginx"
+        touch "$out/etc/s6-overlay/user-bundles.d/user/contents.d/init-dirs"
+        touch "$out/etc/s6-overlay/user-bundles.d/user/contents.d/redis"
+        touch "$out/etc/s6-overlay/user-bundles.d/user/contents.d/logma"
+        touch "$out/etc/s6-overlay/user-bundles.d/user/contents.d/nginx"
       '';
 
       image = pkgs.dockerTools.buildLayeredImage {
@@ -144,8 +147,11 @@
           Env = [
             "S6_KEEP_ENV=1"
             "REDIS_NETWORK=unix"
-            "REDIS_SOCKET=/run/redis/redis.sock"
+            "REDIS_SOCKET=/run/logma-redis/redis.sock"
           ];
+          Volumes = {
+            "/run/logma-redis" = {};
+          };
         };
         maxLayers = 100;
       };
