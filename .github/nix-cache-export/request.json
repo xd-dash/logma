@@ -1,0 +1,4 @@
+{
+  "schema": 1,
+  "reason": "bootstrap cross-repo Nix artifact relay"
+}
