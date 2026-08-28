@@ -27,9 +27,10 @@ func (cp ControlPlane) SubscribeAll(ctx context.Context, handlers ChannelHandler
 }
 
 type ServiceSpec struct {
-	Invocation InvocationInfo
-	Channels   ChannelHandlers
-	Work       func(ctx context.Context) error
+	Invocation   InvocationInfo
+	Channels     ChannelHandlers
+	Subscriptions []SubscriptionDescriptor
+	Work         func(ctx context.Context) error
 }
 
 func (cp ControlPlane) Run(ctx context.Context, spec ServiceSpec) error {
@@ -38,9 +39,19 @@ func (cp ControlPlane) Run(ctx context.Context, spec ServiceSpec) error {
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	teardown := cp.SubscribeAll(runCtx, spec.Channels)
+	descriptors := normalizeDescriptors(spec.Channels, spec.Subscriptions)
+	lease, err := cp.RegisterRuntime(runCtx, spec.Invocation, descriptors)
+	if err != nil {
+		log.Printf("pubsub: failed to register runtime state: %v", err)
+	}
 	defer func() {
 		cancel()
 		teardown()
+		if lease != nil {
+			if err := lease.Close(); err != nil {
+				log.Printf("pubsub: failed to remove runtime state: %v", err)
+			}
+		}
 	}()
 	return spec.Work(runCtx)
 }
@@ -71,11 +82,22 @@ func (sr *Runtime) Configure(spec ServiceSpec) { sr.spec = spec }
 
 func (sr *Runtime) ConfigureDefault(work func(ctx context.Context) error, extraChannels ChannelHandlers) {
 	channels := make(ChannelHandlers, len(extraChannels)+1)
-	channels[sr.ShutdownChannel()] = sr.DefaultShutdownHandler()
+	shutdownChannel := sr.ShutdownChannel()
+	channels[shutdownChannel] = sr.DefaultShutdownHandler()
+	descriptors := []SubscriptionDescriptor{{
+		ID:       "shutdown",
+		Channel:  shutdownChannel,
+		Callback: "internal:shutdown",
+	}}
 	for channel, handler := range extraChannels {
 		channels[channel] = handler
+		descriptors = append(descriptors, SubscriptionDescriptor{
+		ID:       cleanPart(channel),
+		Channel:  channel,
+		Callback: "internal:handler",
+		})
 	}
-	sr.Configure(ServiceSpec{Channels: channels, Work: work})
+	sr.Configure(ServiceSpec{Channels: channels, Subscriptions: descriptors, Work: work})
 }
 
 func (sr *Runtime) Publish(channel string, event any) error {
