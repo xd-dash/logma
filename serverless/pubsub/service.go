@@ -54,7 +54,7 @@ type Runtime struct {
 }
 
 func NewRuntime(client *redis.Client) Runtime { return newRuntime(client, false) }
-func NewRuntimeFromEnv() Runtime               { return newRuntime(NewClientFromEnv(), true) }
+func NewRuntimeFromEnv() Runtime              { return newRuntime(NewClientFromEnv(), true) }
 
 func newRuntime(client *redis.Client, fromEnv bool) Runtime {
 	return Runtime{ControlPlane: NewControlPlane(client), Session: NewSession(), redisFromEnv: fromEnv}
