@@ -85,6 +85,7 @@
         }
         EOF
 
+        mkdir -p "$out/etc/s6-overlay/s6-rc.d/init-dirs/dependencies.d"
         echo oneshot > "$out/etc/s6-overlay/s6-rc.d/init-dirs/type"
         touch "$out/etc/s6-overlay/s6-rc.d/init-dirs/dependencies.d/base"
         cat > "$out/etc/s6-overlay/s6-rc.d/init-dirs/up" <<'EOF'
