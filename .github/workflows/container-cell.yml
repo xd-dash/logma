@@ -30,20 +30,28 @@ jobs:
           path: .deps/nix-alpine
 
       - name: Prepare Nix builder image
-        uses: dash-xd/nix-alpine@1efadd43ccacf4b408c60b5f85892d66dd7488b5
+        uses: dash-xd/nix-alpine@d17153df83336fccd83d8b002c4bda69bbfb0035
         with:
           image-name: nix-alpine:logma-cell
           cache-key: nix-alpine-logma-cell
           toolbox-path: .deps/nix-alpine
 
       - name: Build OCI archive with cached named Nix volumes
-        uses: dash-xd/nix-alpine/volume-cache@1efadd43ccacf4b408c60b5f85892d66dd7488b5
+        uses: dash-xd/nix-alpine/volume-cache@d17153df83336fccd83d8b002c4bda69bbfb0035
         with:
           image-name: nix-alpine:logma-cell
           cache-key: logma-cell-${{ hashFiles('flake.nix', 'go.mod', 'go.sum', 'cmd/**/*.go', 'internal/**/*.go') }}
           cache-restore-prefix: logma-cell-
           store-volume: logma-cell-nix-store
           user-cache-volume: logma-cell-nix-user-cache
+          shared-cache-bucket: ${{ vars.NIX_SHARED_CACHE_BUCKET }}
+          shared-cache-endpoint: storage.googleapis.com
+          shared-cache-region: auto
+          shared-cache-access-key-id: ${{ secrets.NIX_SHARED_CACHE_ACCESS_KEY_ID }}
+          shared-cache-secret-access-key: ${{ secrets.NIX_SHARED_CACHE_SECRET_ACCESS_KEY }}
+          shared-cache-public-key: ${{ vars.NIX_SHARED_CACHE_PUBLIC_KEY }}
+          shared-cache-private-key: ${{ secrets.NIX_SHARED_CACHE_PRIVATE_KEY }}
+          shared-cache-publish-paths: result
           command: |
             if ! nix build path:.#image -L > /workspace/.logma-cell-nix-build.log 2>&1; then
               tail -n 120 /workspace/.logma-cell-nix-build.log
