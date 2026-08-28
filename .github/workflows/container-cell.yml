@@ -30,14 +30,14 @@ jobs:
           path: .deps/nix-alpine
 
       - name: Prepare Nix builder image
-        uses: dash-xd/nix-alpine@d17153df83336fccd83d8b002c4bda69bbfb0035
+        uses: dash-xd/nix-alpine@a3351eae7c3741863a6e420fa0c6675a19623ceb
         with:
           image-name: nix-alpine:logma-cell
           cache-key: nix-alpine-logma-cell
           toolbox-path: .deps/nix-alpine
 
       - name: Build OCI archive with cached named Nix volumes
-        uses: dash-xd/nix-alpine/volume-cache@d17153df83336fccd83d8b002c4bda69bbfb0035
+        uses: dash-xd/nix-alpine/volume-cache@a3351eae7c3741863a6e420fa0c6675a19623ceb
         with:
           image-name: nix-alpine:logma-cell
           cache-key: logma-cell-${{ hashFiles('flake.nix', 'go.mod', 'go.sum', 'cmd/**/*.go', 'internal/**/*.go') }}
@@ -52,6 +52,8 @@ jobs:
           shared-cache-public-key: ${{ vars.NIX_SHARED_CACHE_PUBLIC_KEY }}
           shared-cache-private-key: ${{ secrets.NIX_SHARED_CACHE_PRIVATE_KEY }}
           shared-cache-publish-paths: result
+          artifact-name: nix-volume-cache-logma-cell
+          artifact-retention-days: "30"
           command: |
             if ! nix build path:.#image -L > /workspace/.logma-cell-nix-build.log 2>&1; then
               tail -n 120 /workspace/.logma-cell-nix-build.log
