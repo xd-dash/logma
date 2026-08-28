@@ -13,10 +13,10 @@ const (
 )
 
 type Session struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	done   chan struct{}
-	state  atomic.Int32
+	ctx       context.Context
+	cancel    context.CancelFunc
+	done      chan struct{}
+	state     atomic.Int32
 	startOnce sync.Once
 }
 
