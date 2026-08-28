@@ -36,7 +36,8 @@
       };
 
       runtimeRoot = pkgs.runCommand "logma-runtime-root" {} ''
-        mkdir -p           "$out/etc/logma"           "$out/etc/nginx"           "$out/etc/s6-overlay/s6-rc.d/user/contents.d"           "$out/etc/s6-overlay/s6-rc.d/init-dirs"           "$out/etc/s6-overlay/s6-rc.d/redis/dependencies.d"           "$out/etc/s6-overlay/s6-rc.d/logma/dependencies.d"           "$out/etc/s6-overlay/s6-rc.d/nginx/dependencies.d"
+        mkdir -p           "$out/var"           "$out/tmp"           "$out/etc/logma"           "$out/etc/nginx"           "$out/etc/s6-overlay/s6-rc.d/user/contents.d"           "$out/etc/s6-overlay/s6-rc.d/init-dirs"           "$out/etc/s6-overlay/s6-rc.d/redis/dependencies.d"           "$out/etc/s6-overlay/s6-rc.d/logma/dependencies.d"           "$out/etc/s6-overlay/s6-rc.d/nginx/dependencies.d"
+        chmod 1777 "$out/tmp"
 
         cat > "$out/etc/logma/redis.conf" <<'EOF'
         port 0
