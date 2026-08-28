@@ -22,11 +22,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Checkout nix-alpine builder sidecar
+        uses: actions/checkout@v4
+        with:
+          repository: dash-xd/nix-alpine
+          ref: main
+          path: .deps/nix-alpine
+
       - name: Prepare Nix builder image
         uses: dash-xd/nix-alpine@main
         with:
           image-name: nix-alpine:logma-cell
           cache-key: nix-alpine-logma-cell
+          toolbox-path: .deps/nix-alpine
 
       - name: Build OCI archive with cached named Nix volumes
         uses: dash-xd/nix-alpine/volume-cache@main
