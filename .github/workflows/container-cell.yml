@@ -45,7 +45,7 @@ jobs:
           store-volume: logma-cell-nix-store
           user-cache-volume: logma-cell-nix-user-cache
           command: |
-            if ! nix build .#image -L > /workspace/.logma-cell-nix-build.log 2>&1; then
+            if ! nix build path:.#image -L > /workspace/.logma-cell-nix-build.log 2>&1; then
               tail -n 120 /workspace/.logma-cell-nix-build.log
               exit 1
             fi
