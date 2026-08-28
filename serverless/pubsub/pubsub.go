@@ -31,12 +31,18 @@ type (
 	ShutdownRequest = implementation.ShutdownRequest
 )
 
-// Holder aliases the standalone implementation so values passed through this
-// package retain identical method sets and runtime semantics.
-type Holder[T Lifecycle] = implementation.Holder[T]
+// Holder forwards lifecycle ownership to the standalone implementation while
+// keeping Logma as the import surface seen by application code.
+type Holder[T Lifecycle] struct {
+	inner *implementation.Holder[T]
+}
 
 func NewHolder[T Lifecycle](newFn func() T) *Holder[T] {
-	return implementation.NewHolder(newFn)
+	return &Holder[T]{inner: implementation.NewHolder(newFn)}
+}
+
+func (h *Holder[T]) Claim() (T, bool) {
+	return h.inner.Claim()
 }
 
 func NewClientFromEnv() *redis.Client {
