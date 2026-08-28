@@ -58,8 +58,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker run -d             --name logma-cell-smoke             -e API_KEY=fixture-key             -p 18080:8080             logma-cell:latest
-          trap 'docker logs logma-cell-smoke || true; docker rm -f logma-cell-smoke >/dev/null 2>&1 || true' EXIT
+          docker volume create logma-cell-redis-socket >/dev/null
+          docker run -d             --name logma-cell-smoke             -e API_KEY=fixture-key             -v logma-cell-redis-socket:/run/logma-redis             -p 18080:8080             logma-cell:latest
+          trap 'docker logs logma-cell-smoke || true; docker rm -f logma-cell-smoke >/dev/null 2>&1 || true; docker volume rm logma-cell-redis-socket >/dev/null 2>&1 || true' EXIT
 
           for _ in $(seq 1 100); do
             if curl -fsS -H 'X-API-Key: fixture-key' http://127.0.0.1:18080/channels/ >/tmp/channels.json; then
@@ -69,15 +70,17 @@ jobs:
           done
 
           test -s /tmp/channels.json
-          docker exec logma-cell-smoke test -S /run/redis/redis.sock
-          docker exec logma-cell-smoke redis-cli -s /run/redis/redis.sock ping | grep -qx PONG
+          docker exec logma-cell-smoke test -S /run/logma-redis/redis.sock
+          docker exec logma-cell-smoke redis-cli -s /run/logma-redis/redis.sock ping | grep -qx PONG
+
+          docker run --rm             -v logma-cell-redis-socket:/run/logma-redis             --entrypoint redis-cli             logma-cell:latest             -s /run/logma-redis/redis.sock ping | grep -qx PONG
 
           if docker exec logma-cell-smoke redis-cli -h 127.0.0.1 -p 6379 ping >/dev/null 2>&1; then
             echo "::error::Redis TCP port unexpectedly accepting connections"
             exit 1
           fi
 
-          echo "::notice::nginx -> logma -> Redis unix socket smoke passed; Redis TCP is disabled"
+          echo "::notice::nginx -> logma -> shared Redis unix socket smoke passed; sibling container PONG; Redis TCP is disabled"
 
       - name: Upload OCI archive
         uses: actions/upload-artifact@v4
