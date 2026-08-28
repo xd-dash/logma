@@ -80,9 +80,9 @@ func (rt *Runtime) RecordInvocation(r *http.Request, requestID string) {
 	}
 }
 
-func (rt *Runtime) Subscribe(channels []string) { rt.channels = channels }
+func (rt *Runtime) Subscribe(channels []string)   { rt.channels = channels }
 func (rt *Runtime) Events() <-chan PublishRequest { return rt.events }
-func (rt *Runtime) Start(ctx context.Context) { rt.Begin(ctx, rt.run) }
+func (rt *Runtime) Start(ctx context.Context)     { rt.Begin(ctx, rt.run) }
 
 func (rt *Runtime) run() {
 	subscriptions := make(map[string]*subscription)
