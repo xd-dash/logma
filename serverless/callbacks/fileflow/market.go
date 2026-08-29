@@ -111,13 +111,31 @@ func (f *MarketFlow) Write(scope Scope, payload string) (string, error) {
 	return writer.path, nil
 }
 
-// RotateUploadDelete is idempotent per scope + trigger_id. It opens and installs
-// the new active writer before closing the old segment, so incoming writes never
-// target a segment being uploaded. A pending marker makes retries reuse the same
-// closed segment instead of rotating repeatedly after a failed Drive request.
+func (f *MarketFlow) ActivePath(scope Scope) (string, bool) {
+	key, err := scope.Key()
+	if err != nil {
+		return "", false
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	writer := f.writers[key]
+	if writer == nil {
+		return "", false
+	}
+	return writer.path, true
+}
+
+// RotateUploadDelete is idempotent per scope + trigger_id. The same trigger can
+// safely be delivered repeatedly. A pending marker persists the closed segment
+// before Drive I/O, so a failed upload resumes that segment rather than rotating
+// the current writer again. Once Drive confirms the upload, the closed file and
+// pending marker are deleted.
 func (f *MarketFlow) RotateUploadDelete(ctx context.Context, scope Scope, trigger UploadTrigger) (MarketUploadResult, error) {
 	if strings.TrimSpace(trigger.TriggerID) == "" {
 		return MarketUploadResult{}, errors.New("trigger_id is required for market upload")
+	}
+	if f == nil || f.Drives == nil {
+		return MarketUploadResult{}, errors.New("market flow and Google Drive registry are required")
 	}
 	uploader, err := f.Drives.Resolve(scope.CredentialID)
 	if err != nil {
@@ -128,21 +146,27 @@ func (f *MarketFlow) RotateUploadDelete(ctx context.Context, scope Scope, trigge
 		return MarketUploadResult{}, err
 	}
 	uploadID := deterministicID("market", key, trigger.TriggerID)
+	pendingPath, err := f.pendingPath(scope, trigger.TriggerID)
+	if err != nil {
+		return MarketUploadResult{}, err
+	}
+	pending, pendingErr := readPending(pendingPath)
+	if pendingErr != nil && !errors.Is(pendingErr, os.ErrNotExist) {
+		return MarketUploadResult{}, pendingErr
+	}
 
 	if existing, ok, err := uploader.FindByUploadID(ctx, uploadID); err != nil {
 		return MarketUploadResult{}, err
 	} else if ok {
 		existing.AlreadyExists = true
-		return MarketUploadResult{Scope: scope, TriggerID: trigger.TriggerID, UploadID: uploadID, Drive: existing}, nil
-	}
-
-	pendingPath, err := f.pendingPath(scope, trigger.TriggerID)
-	if err != nil {
-		return MarketUploadResult{}, err
-	}
-	pending, err := readPending(pendingPath)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return MarketUploadResult{}, err
+		closed := ""
+		if pending != nil {
+			closed = pending.Path
+			if err := cleanupPendingMarketUpload(pendingPath, pending.Path); err != nil {
+				return MarketUploadResult{}, err
+			}
+		}
+		return MarketUploadResult{Scope: scope, TriggerID: trigger.TriggerID, ClosedPath: closed, UploadID: uploadID, Drive: existing}, nil
 	}
 
 	newPath := ""
@@ -170,27 +194,19 @@ func (f *MarketFlow) RotateUploadDelete(ctx context.Context, scope Scope, trigge
 		mimeType = "application/x-ndjson"
 	}
 	result, err := uploader.Upload(ctx, gdrive.UploadRequest{
-		Path:     pending.Path,
-		Name:     name,
-		FolderID: trigger.FolderID,
-		MIMEType: mimeType,
-		UploadID: pending.UploadID,
+		Path: pending.Path, Name: name, FolderID: trigger.FolderID,
+		MIMEType: mimeType, UploadID: pending.UploadID,
 		AppProperties: map[string]string{
-			"logma_kind":          "market",
-			"logma_credential_id": scope.CredentialID,
-			"logma_request_id":    scope.RequestID,
-			"logma_subscriber_id": scope.SubscriberID,
-			"logma_trigger_id":    trigger.TriggerID,
+			"logma_kind": "market", "logma_credential_id": scope.CredentialID,
+			"logma_request_id": scope.RequestID, "logma_subscriber_id": scope.SubscriberID,
+			"logma_trigger_id": trigger.TriggerID,
 		},
 	})
 	if err != nil {
 		return MarketUploadResult{Scope: scope, TriggerID: trigger.TriggerID, ClosedPath: pending.Path, NewPath: newPath, UploadID: pending.UploadID}, err
 	}
-	if err := os.Remove(pending.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return MarketUploadResult{}, fmt.Errorf("Drive upload succeeded but deleting closed market segment failed: %w", err)
-	}
-	if err := os.Remove(pendingPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return MarketUploadResult{}, fmt.Errorf("Drive upload succeeded but deleting pending marker failed: %w", err)
+	if err := cleanupPendingMarketUpload(pendingPath, pending.Path); err != nil {
+		return MarketUploadResult{}, err
 	}
 	return MarketUploadResult{Scope: scope, TriggerID: trigger.TriggerID, ClosedPath: pending.Path, NewPath: newPath, UploadID: pending.UploadID, Drive: result}, nil
 }
@@ -225,9 +241,11 @@ func (f *MarketFlow) rotate(scope Scope, key string) (closedPath, newPath string
 	if err != nil {
 		return "", "", err
 	}
+	// Swap first. Any later callback write sees only the new file.
 	f.writers[key] = next
 	if err := current.file.Sync(); err != nil {
 		_ = next.file.Close()
+		_ = os.Remove(next.path)
 		f.writers[key] = current
 		return "", "", fmt.Errorf("sync closed market segment: %w", err)
 	}
@@ -308,4 +326,16 @@ func readPending(path string) (*pendingMarketUpload, error) {
 		return nil, fmt.Errorf("decode market pending marker: %w", err)
 	}
 	return &pending, nil
+}
+
+func cleanupPendingMarketUpload(markerPath, segmentPath string) error {
+	if segmentPath != "" {
+		if err := os.Remove(segmentPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("Drive upload is committed but deleting closed market segment failed: %w", err)
+		}
+	}
+	if err := os.Remove(markerPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("Drive upload is committed but deleting pending marker failed: %w", err)
+	}
+	return nil
 }
