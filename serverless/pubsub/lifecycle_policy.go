@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"sync"
 	"time"
 
@@ -30,6 +31,7 @@ const (
 	Policy3S             Policy = "3s"
 	Policy3Publishes     Policy = "3-publishes"
 	Policy30S64Publishes Policy = "30s-64-publishes"
+	Policy5M             Policy = "5m"
 	Policy20M            Policy = "20m"
 )
 
@@ -37,34 +39,69 @@ type lifecyclePolicyConfig struct {
 	timer        time.Duration
 	tickEvery    time.Duration
 	maxPublishes int64
+	code         ratelimiter.PolicyCode
+	energy       uint16
+}
+
+func (p Policy) policySpec() (ratelimiter.PolicySpec, error) {
+	switch p {
+	case PolicyNone:
+		return ratelimiter.PolicySpec{}, nil
+	case Policy3S:
+		return ratelimiter.PolicySpec{Duration: ratelimiter.Duration3S}, nil
+	case Policy3Publishes:
+		publishes, err := ratelimiter.NewScaleClass(3)
+		return ratelimiter.PolicySpec{Publishes: publishes}, err
+	case Policy30S64Publishes:
+		publishes, err := ratelimiter.NewScaleClass(64)
+		return ratelimiter.PolicySpec{Publishes: publishes, Duration: ratelimiter.Duration30S}, err
+	case Policy5M:
+		return ratelimiter.PolicySpec{Duration: ratelimiter.Duration5M}, nil
+	case Policy20M:
+		return ratelimiter.PolicySpec{Duration: ratelimiter.Duration20M}, nil
+	default:
+		return ratelimiter.PolicySpec{}, fmt.Errorf("unknown lifecycle policy %q", p)
+	}
 }
 
 func (p Policy) config() (lifecyclePolicyConfig, error) {
-	switch p {
-	case PolicyNone:
+	if p == PolicyNone {
 		return lifecyclePolicyConfig{}, nil
-	case Policy3S:
-		return lifecyclePolicyConfig{
-			timer:     3 * time.Second,
-			tickEvery: 250 * time.Millisecond,
-		}, nil
-	case Policy3Publishes:
-		return lifecyclePolicyConfig{
-			maxPublishes: 3,
-		}, nil
-	case Policy30S64Publishes:
-		return lifecyclePolicyConfig{
-			timer:        30 * time.Second,
-			tickEvery:    500 * time.Millisecond,
-			maxPublishes: 64,
-		}, nil
-	case Policy20M:
-		return lifecyclePolicyConfig{
-			timer:     20 * time.Minute,
-			tickEvery: time.Second,
-		}, nil
+	}
+	spec, err := p.policySpec()
+	if err != nil {
+		return lifecyclePolicyConfig{}, err
+	}
+	resolver := ratelimiter.TargetResolverFunc(func(ratelimiter.Input, ratelimiter.Stage) []ratelimiter.Target {
+		return nil
+	})
+	compiled, err := ratelimiter.CompilePolicy(
+		preflightprofile.New(resolver),
+		spec,
+		ratelimiter.EntitlementFor(spec),
+	)
+	if err != nil {
+		return lifecyclePolicyConfig{}, fmt.Errorf("compile lifecycle policy %q: %w", p, err)
+	}
+	return lifecyclePolicyConfig{
+		timer:        compiled.Duration,
+		tickEvery:    lifecycleTickEvery(compiled.Duration),
+		maxPublishes: int64(compiled.Publishes),
+		code:         compiled.Code,
+		energy:       compiled.Energy,
+	}, nil
+}
+
+func lifecycleTickEvery(duration time.Duration) time.Duration {
+	switch {
+	case duration == 0:
+		return 0
+	case duration <= 3*time.Second:
+		return 250 * time.Millisecond
+	case duration <= 30*time.Second:
+		return 500 * time.Millisecond
 	default:
-		return lifecyclePolicyConfig{}, fmt.Errorf("unknown lifecycle policy %q", p)
+		return time.Second
 	}
 }
 
@@ -159,6 +196,8 @@ func newLifecycleGuard(
 				Purpose: ratelimiter.PurposeLifecycleControl,
 				Data: ratelimiter.Metadata{
 					"lifecycle_policy": string(policy),
+					"policy_code":      strconv.FormatUint(uint64(cfg.code), 10),
+					"policy_energy":    strconv.FormatUint(uint64(cfg.energy), 10),
 					"runtime":          baseBucket,
 				},
 			}},

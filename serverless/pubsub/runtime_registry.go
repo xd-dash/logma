@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	ratelimiter "github.com/dash-xd/ratelimiter"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -37,6 +39,8 @@ type RuntimeRecord struct {
 	UpdatedAt       time.Time                `json:"updated_at"`
 	Subscriptions   []SubscriptionDescriptor `json:"subscriptions"`
 	Lifecycle       Policy                   `json:"lifecycle,omitempty"`
+	PolicyCode      ratelimiter.PolicyCode   `json:"policy_code,omitempty"`
+	PolicyEnergy    uint16                   `json:"policy_energy,omitempty"`
 }
 
 func RuntimeRecordKey(namespace, instanceID, requestID string) string {
@@ -111,6 +115,10 @@ func (cp ControlPlane) RegisterRuntime(ctx context.Context, invocation Invocatio
 	if len(policies) > 0 {
 		policy = policies[0]
 	}
+	policyConfig, err := policy.config()
+	if err != nil {
+		return nil, err
+	}
 	record := RuntimeRecord{
 		Namespace:       namespace,
 		InstanceID:      cp.InstanceID,
@@ -121,6 +129,8 @@ func (cp ControlPlane) RegisterRuntime(ctx context.Context, invocation Invocatio
 		UpdatedAt:       now,
 		Subscriptions:   subscriptions,
 		Lifecycle:       policy,
+		PolicyCode:      policyConfig.code,
+		PolicyEnergy:    policyConfig.energy,
 	}
 	record.Key = RuntimeRecordKey(record.Namespace, record.InstanceID, record.RequestID)
 	encodedSubscriptions, err := json.Marshal(record.Subscriptions)
@@ -137,6 +147,8 @@ func (cp ControlPlane) RegisterRuntime(ctx context.Context, invocation Invocatio
 		"updated_at":       record.UpdatedAt.Format(time.RFC3339Nano),
 		"subscriptions":    string(encodedSubscriptions),
 		"lifecycle":        string(record.Lifecycle),
+		"policy_code":      uint64(record.PolicyCode),
+		"policy_energy":    record.PolicyEnergy,
 	}
 	indexKey := runtimeIndexKey(record.Namespace)
 	pipe := cp.Client.TxPipeline()
@@ -200,6 +212,16 @@ func LoadRuntimeRecord(ctx context.Context, client *redis.Client, key string) (R
 		InvocationKey:   fields["invocation_key"],
 		ShutdownChannel: fields["shutdown_channel"],
 		Lifecycle:       Policy(fields["lifecycle"]),
+	}
+	if value := fields["policy_code"]; value != "" {
+		if parsed, err := strconv.ParseUint(value, 10, 64); err == nil {
+			record.PolicyCode = ratelimiter.PolicyCode(parsed)
+		}
+	}
+	if value := fields["policy_energy"]; value != "" {
+		if parsed, err := strconv.ParseUint(value, 10, 16); err == nil {
+			record.PolicyEnergy = uint16(parsed)
+		}
 	}
 	if value := fields["started_at"]; value != "" {
 		record.StartedAt, _ = time.Parse(time.RFC3339Nano, value)
