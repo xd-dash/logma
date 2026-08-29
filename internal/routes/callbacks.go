@@ -74,6 +74,14 @@ func parseCallbackConfigFromRequest(r *http.Request) (callbackConfig, error) {
 		return config, errors.New("Failed to parse request body")
 	}
 
+	return callbackConfigFromInput(input)
+}
+
+func callbackConfigFromInput(
+	input callbackInput,
+) (callbackConfig, error) {
+	var config callbackConfig
+
 	if len(input.CallbackURL) > 0 {
 		urls, err := decodeStringOrStringList(input.CallbackURL)
 		if err != nil {
