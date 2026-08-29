@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"sort"
@@ -50,9 +49,8 @@ var (
 )
 
 type SubscriptionListener struct {
-	Channel     string
-	CallbackURL string
-	Callbacks   []func(url string, message PublishRequest)
+	Channel   string
+	Callbacks callbackConfig
 }
 
 type PublishRequest struct {
@@ -65,22 +63,22 @@ type PublishRequest struct {
 }
 
 type subscriptionInfo struct {
-	ID          string
-	Key         string
-	Channel     string
-	CallbackURL string
+	ID        string
+	Key       string
+	Channel   string
+	Callbacks callbackConfig
 }
 
 type subscribeResponse struct {
-	SubscriptionID string `json:"subscriptionID"`
-	Channel        string `json:"channel"`
-	CallbackURL    string `json:"callbackURL"`
+	SubscriptionID string           `json:"subscriptionID"`
+	Channel        string           `json:"channel"`
+	Callbacks      []callbackScheme `json:"callbacks"`
 }
 
 type subscriptionGroupMember struct {
-	SubscriptionID string `json:"subscriptionID"`
-	Channel        string `json:"channel"`
-	CallbackURL    string `json:"callbackURL"`
+	SubscriptionID string           `json:"subscriptionID"`
+	Channel        string           `json:"channel"`
+	Callbacks      []callbackScheme `json:"callbacks"`
 }
 
 type subscriptionGroupResponse struct {
@@ -359,12 +357,26 @@ func startSubscription(
 	channelName string,
 	callbackURL string,
 ) (*subscriptionInfo, error) {
+	return startSubscriptionWithCallbacks(
+		channelName,
+		singleHTTPCallbackConfig(callbackURL),
+	)
+}
+
+func startSubscriptionWithCallbacks(
+	channelName string,
+	callbacks callbackConfig,
+) (*subscriptionInfo, error) {
 	if channelName == "" {
 		return nil, errors.New("channel name is empty")
 	}
 
-	if callbackURL == "" {
-		return nil, errors.New("callback URL is empty")
+	callbacks, err := normalizeCallbackConfig(callbacks)
+	if err != nil {
+		return nil, err
+	}
+	if callbackConfigEmpty(callbacks) {
+		return nil, errors.New("callback configuration is empty")
 	}
 
 	subCtx, cancel := context.WithCancel(rootCtx)
@@ -393,10 +405,21 @@ func startSubscription(
 	subscriptionKey := generateTempChannelID(channelName)
 	subscriptionID := extractSubscriptionID(subscriptionKey)
 
+	storedCallbacks, err := encodeStoredCallbackConfig(callbacks)
+	if err != nil {
+		cancel()
+		_ = pubsub.Close()
+		return nil, fmt.Errorf(
+			"encode callback configuration for %q: %w",
+			channelName,
+			err,
+		)
+	}
+
 	if err := client.Set(
 		subCtx,
 		subscriptionKey,
-		callbackURL,
+		storedCallbacks,
 		0,
 	).Err(); err != nil {
 		cancel()
@@ -446,24 +469,18 @@ func startSubscription(
 	}
 
 	info := &subscriptionInfo{
-		ID:          subscriptionID,
-		Key:         subscriptionKey,
-		Channel:     channelName,
-		CallbackURL: callbackURL,
+		ID:        subscriptionID,
+		Key:       subscriptionKey,
+		Channel:   channelName,
+		Callbacks: callbacks,
 	}
 
 	go runSubscription(
 		subCtx,
 		pubsub,
 		SubscriptionListener{
-			Channel:     channelName,
-			CallbackURL: callbackURL,
-			Callbacks: []func(
-				url string,
-				message PublishRequest,
-			){
-				sendMessageToEndpoint,
-			},
+			Channel:   channelName,
+			Callbacks: callbacks,
 		},
 		info,
 	)
@@ -550,13 +567,11 @@ func runSubscription(
 				continue
 			}
 
-			for _, callback := range listener.Callbacks {
-				dispatcher.dispatch(
-					callback,
-					listener.CallbackURL,
-					message,
-				)
-			}
+			dispatchCallbackConfig(
+				dispatcher,
+				listener.Callbacks,
+				message,
+			)
 
 			if message.Type == "Signal" &&
 				message.Message == "UNSUBSCRIBE" {
@@ -766,8 +781,9 @@ func NewRouter() http.Handler {
 		r.Get("/", activeChannelsHandler)
 		r.Post("/", createChannelHandler)
 
+		r.Post("/save", saveActiveChannelsGroup)
 		r.Get("/groups", listSubscriptionGroups)
-		r.Post("/groups", saveSubscriptionGroup)
+		r.Post("/groups", createSubscriptionGroup)
 		r.Get("/groups/{groupID}", getSubscriptionGroup)
 		r.Delete("/groups/{groupID}", deleteSubscriptionGroup)
 		r.Post("/groups/{groupID}/load", loadSubscriptionGroup)
@@ -840,7 +856,7 @@ func startChannelCallback(
 	r *http.Request,
 	channelName string,
 ) {
-	callbackURL, err := callbackURLFromRequest(r)
+	callbacks, err := parseCallbackConfigFromRequest(r)
 	if err != nil {
 		http.Error(
 			w,
@@ -850,23 +866,28 @@ func startChannelCallback(
 		return
 	}
 
-	if callbackURL == "" {
-		callbackURL = os.Getenv(
-			"PUBSUB_DEFAULT_CALLBACK_URL",
+	if callbackConfigEmpty(callbacks) {
+		defaultCallbackURL := strings.TrimSpace(
+			os.Getenv("PUBSUB_DEFAULT_CALLBACK_URL"),
 		)
+		if defaultCallbackURL != "" {
+			callbacks = singleHTTPCallbackConfig(
+				defaultCallbackURL,
+			)
+		}
 	}
-	if callbackURL == "" {
+	if callbackConfigEmpty(callbacks) {
 		http.Error(
 			w,
-			"Callback URL is required",
+			"Callback configuration is required",
 			http.StatusBadRequest,
 		)
 		return
 	}
 
-	info, err := startSubscription(
+	info, err := startSubscriptionWithCallbacks(
 		channelName,
-		callbackURL,
+		callbacks,
 	)
 	if err != nil {
 		fmt.Printf(
@@ -886,7 +907,7 @@ func startChannelCallback(
 	response := subscribeResponse{
 		SubscriptionID: info.ID,
 		Channel:        info.Channel,
-		CallbackURL:    info.CallbackURL,
+		Callbacks:      info.Callbacks.Callbacks,
 	}
 
 	w.Header().Set(
@@ -907,46 +928,6 @@ func startChannelCallback(
 			err,
 		)
 	}
-}
-
-func callbackURLFromRequest(
-	r *http.Request,
-) (string, error) {
-	for _, key := range []string{
-		"callbackURL",
-		"callback",
-		"callback_url",
-	} {
-		if value := strings.TrimSpace(
-			r.URL.Query().Get(key),
-		); value != "" {
-			return value, nil
-		}
-	}
-
-	if r.Body == nil {
-		return "", nil
-	}
-
-	var requestBody struct {
-		CallbackURL string `json:"callbackURL"`
-	}
-
-	if err := json.NewDecoder(
-		r.Body,
-	).Decode(&requestBody); err != nil {
-		if errors.Is(err, io.EOF) {
-			return "", nil
-		}
-
-		return "", errors.New(
-			"Failed to parse request body",
-		)
-	}
-
-	return strings.TrimSpace(
-		requestBody.CallbackURL,
-	), nil
 }
 
 func generateChannelName() (string, error) {
