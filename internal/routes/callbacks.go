@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/redis/go-redis/v9"
 )
 
 const callbackConfigVersion = "v1"
@@ -207,6 +209,16 @@ func normalizeCallbackConfig(config callbackConfig) (callbackConfig, error) {
 			if callback.Method == "" {
 				callback.Method = http.MethodPost
 			}
+		case "redis-function", "lua":
+			var cfg redisFunctionCallbackConfig
+			if len(callback.Config) == 0 ||
+				json.Unmarshal(callback.Config, &cfg) != nil ||
+				strings.TrimSpace(cfg.Name) == "" {
+				return callbackConfig{}, errors.New(
+					"redis-function callback requires config.name",
+				)
+			}
+			callback.Type = "redis-function"
 		default:
 			if len(callback.Config) == 0 &&
 				callback.URL == "" &&
@@ -279,29 +291,38 @@ func dispatchCallbackConfig(
 	dispatcher *callbackDispatcher,
 	config callbackConfig,
 	message PublishRequest,
+	tenant string,
+	redisClient *redis.Client,
 ) {
 	for _, callback := range config.Callbacks {
-		if callback.Type != "http" {
-			continue
-		}
+		switch callback.Type {
+		case "http":
+			urls := make([]string, 0, 1+len(callback.URLs))
+			if callback.URL != "" {
+				urls = append(urls, callback.URL)
+			}
+			urls = append(urls, callback.URLs...)
 
-		urls := make([]string, 0, 1+len(callback.URLs))
-		if callback.URL != "" {
-			urls = append(urls, callback.URL)
-		}
-		urls = append(urls, callback.URLs...)
-
-		for _, url := range urls {
-			dispatcher.dispatch(
-				func(target string, message PublishRequest) {
-					sendMessageToEndpointWithScheme(
-						target,
-						callback,
-						message,
-					)
-				},
-				url,
+			for _, url := range urls {
+				dispatcher.dispatch(
+					func(target string, message PublishRequest) {
+						sendMessageToEndpointWithScheme(
+							target,
+							callback,
+							message,
+						)
+					},
+					url,
+					message,
+				)
+			}
+		case "redis-function":
+			dispatchRedisFunctionCallback(
+				dispatcher,
+				callback,
 				message,
+				tenant,
+				redisClient,
 			)
 		}
 	}
