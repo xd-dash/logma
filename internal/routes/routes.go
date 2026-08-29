@@ -958,7 +958,12 @@ func startChannelCallback(
 	}
 
 	principal, _ := principalFromRequest(r)
-	if authProfileFromEnv().Name == "managed" && principal.Tenant != "" {
+	provider, providerErr := authProviderFromEnv()
+	if providerErr != nil {
+		http.Error(w, providerErr.Error(), http.StatusInternalServerError)
+		return
+	}
+	if provider != nil && principal.Tenant != "" {
 		channelName, err = scopeChannelForPrincipal(principal, channelName)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusForbidden)
