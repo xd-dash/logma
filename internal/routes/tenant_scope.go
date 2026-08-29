@@ -2,6 +2,7 @@ package routes
 
 import (
 	"errors"
+	"net/http"
 	"strings"
 
 	logmaacl "github.com/xd-dash/logma/acl"
@@ -30,4 +31,23 @@ func managedTenantGroupsAllowed(principal requestPrincipal) bool {
 	// Groups still use the historical global Redis key schema. Keep them
 	// admin-only in managed mode until their storage keys are tenant-prefixed.
 	return principal.Admin
+}
+
+func managedGroupGuard(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if authProfileFromEnv().Name != "managed" {
+			handler(w, r)
+			return
+		}
+		principal, ok := principalFromRequest(r)
+		if !ok || !managedTenantGroupsAllowed(principal) {
+			http.Error(
+				w,
+				"subscription groups are admin-only in managed mode until group storage is tenant-namespaced",
+				http.StatusForbidden,
+			)
+			return
+		}
+		handler(w, r)
+	}
 }
