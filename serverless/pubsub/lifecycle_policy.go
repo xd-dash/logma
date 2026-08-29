@@ -26,11 +26,11 @@ const (
 type Policy string
 
 const (
-	PolicyNone Policy = ""
-	Policy3S Policy = "3s"
-	Policy3Publishes Policy = "3-publishes"
+	PolicyNone            Policy = ""
+	Policy3S              Policy = "3s"
+	Policy3Publishes      Policy = "3-publishes"
 	Policy30S64Publishes Policy = "30s-64-publishes"
-	Policy20M Policy = "20m"
+	Policy20M             Policy = "20m"
 )
 
 type lifecyclePolicyConfig struct {
@@ -116,7 +116,7 @@ func newLifecycleGuard(
 	if err != nil {
 		return nil, err
 	}
-	if policy == LifecycleNone {
+	if policy == PolicyNone {
 		return nil, nil
 	}
 
