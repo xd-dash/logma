@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/dash-xd/ratelimiter/auth"
 )
 
 func scopeChannelForPrincipal(principal requestPrincipal, channel string) (string, error) {
