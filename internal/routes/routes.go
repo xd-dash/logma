@@ -413,6 +413,13 @@ func startSubscriptionForPrincipal(
 		ownSubscriptionClient = true
 	}
 
+	clientHandedOff := false
+	defer func() {
+		if ownSubscriptionClient && !clientHandedOff {
+			_ = subscriptionClient.Close()
+		}
+	}()
+
 	pubsub := subscriptionClient.Subscribe(
 		subCtx,
 		channelName,
@@ -502,6 +509,7 @@ func startSubscriptionForPrincipal(
 		Callbacks: callbacks,
 	}
 
+	clientHandedOff = true
 	go runSubscription(
 		subCtx,
 		pubsub,
