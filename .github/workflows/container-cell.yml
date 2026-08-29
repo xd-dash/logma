@@ -12,9 +12,20 @@ on:
       - 'deploy/container/**'
       - '.github/workflows/container-cell.yml'
   workflow_dispatch:
+    inputs:
+      cache-mode:
+        description: Nix build cache policy
+        type: choice
+        options:
+          - none
+          - volume
+        default: none
 
 permissions:
   contents: read
+
+env:
+  NIX_CACHE_MODE: ${{ inputs.cache-mode || 'none' }}
 
 jobs:
   build-and-smoke:
@@ -37,27 +48,52 @@ jobs:
           cache-key: nix-alpine-logma-cell
           toolbox-path: .deps/nix-alpine
 
-      - name: Build OCI archive with shared Nix cache
-        uses: dash-xd/nix-alpine/volume-cache@80a2821b7571edd09507f9b4349e2f1ed3daf900
+      - name: Restore lightweight Nix cache
+        if: env.NIX_CACHE_MODE == 'volume'
+        uses: actions/cache/restore@v4
         with:
-          image-name: nix-alpine:logma-cell
-          cache-key: logma-cell-${{ hashFiles('flake.nix', 'go.mod', 'go.sum', 'cmd/**/*.go', 'internal/**/*.go') }}
-          cache-restore-prefix: logma-cell-
-          store-volume: logma-cell-nix-store
-          user-cache-volume: logma-cell-nix-user-cache
-          shared-cache-bucket: ${{ vars.NIX_SHARED_CACHE_BUCKET }}
-          shared-cache-endpoint: storage.googleapis.com
-          shared-cache-region: auto
-          shared-cache-access-key-id: ${{ secrets.NIX_SHARED_CACHE_ACCESS_KEY_ID }}
-          shared-cache-secret-access-key: ${{ secrets.NIX_SHARED_CACHE_SECRET_ACCESS_KEY }}
-          shared-cache-public-key: ${{ vars.NIX_SHARED_CACHE_PUBLIC_KEY }}
-          shared-cache-private-key: ${{ secrets.NIX_SHARED_CACHE_PRIVATE_KEY }}
-          shared-cache-publish-paths: result
-          command-timeout: "8m"
-          publish-timeout: "3m"
-          command: |
-            nix build path:.#image -L
-            cp -L result /workspace/logma-cell.tar.gz
+          path: .nix-cache
+          key: logma-nix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'flake.nix', 'go.mod', 'go.sum') }}
+          restore-keys: |
+            logma-nix-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Build OCI archive
+        shell: bash
+        env:
+          CACHE_MODE: ${{ env.NIX_CACHE_MODE }}
+        run: |
+          set -euo pipefail
+
+          docker_args=(
+            --rm
+            --user root
+            -e 'NIX_CONFIG=experimental-features = nix-command flakes
+          sandbox = false
+          filter-syscalls = false
+          build-users-group = nixbld'
+            -v "$GITHUB_WORKSPACE:/workspace"
+            -w /workspace
+          )
+
+          if [[ "$CACHE_MODE" == "volume" ]]; then
+            mkdir -p .nix-cache/store .nix-cache/user
+            docker_args+=(
+              -v "$GITHUB_WORKSPACE/.nix-cache/store:/nix"
+              -v "$GITHUB_WORKSPACE/.nix-cache/user:/home/nixuser/.cache/nix"
+            )
+          fi
+
+          docker run "${docker_args[@]}" nix-alpine:logma-cell \
+            bash -lc 'timeout --foreground 8m nix build path:.#image -L'
+
+          cp -L result logma-cell.tar.gz
+
+      - name: Save lightweight Nix cache
+        if: env.NIX_CACHE_MODE == 'volume'
+        uses: actions/cache/save@v4
+        with:
+          path: .nix-cache
+          key: logma-nix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'flake.nix', 'go.mod', 'go.sum') }}
 
       - name: Load image
         run: docker load -i logma-cell.tar.gz
@@ -67,7 +103,12 @@ jobs:
         run: |
           set -euo pipefail
           docker volume create logma-cell-redis-socket >/dev/null
-          docker run -d             --name logma-cell-smoke             -e API_KEY=fixture-key             -v logma-cell-redis-socket:/run/logma-redis             -p 18080:8080             logma-cell:latest
+          docker run -d \
+            --name logma-cell-smoke \
+            -e API_KEY=fixture-key \
+            -v logma-cell-redis-socket:/run/logma-redis \
+            -p 18080:8080 \
+            logma-cell:latest
           trap 'docker logs logma-cell-smoke || true; docker rm -f logma-cell-smoke >/dev/null 2>&1 || true; docker volume rm logma-cell-redis-socket >/dev/null 2>&1 || true' EXIT
 
           for _ in $(seq 1 100); do
@@ -81,7 +122,12 @@ jobs:
           docker exec logma-cell-smoke test -S /run/logma-redis/redis.sock
           docker exec logma-cell-smoke redis-cli -s /run/logma-redis/redis.sock ping | grep -qx PONG
 
-          docker run --rm             --user 10001:6379             -v logma-cell-redis-socket:/run/logma-redis             --entrypoint redis-cli             logma-cell:latest             -s /run/logma-redis/redis.sock ping | grep -qx PONG
+          docker run --rm \
+            --user 10001:6379 \
+            -v logma-cell-redis-socket:/run/logma-redis \
+            --entrypoint redis-cli \
+            logma-cell:latest \
+            -s /run/logma-redis/redis.sock ping | grep -qx PONG
 
           if docker exec logma-cell-smoke redis-cli -h 127.0.0.1 -p 6379 ping >/dev/null 2>&1; then
             echo "::error::Redis TCP port unexpectedly accepting connections"
