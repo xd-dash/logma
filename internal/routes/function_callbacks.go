@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/dash-xd/ratelimiter/auth"
+	"github.com/redis/go-redis/v9"
 )
 
 type redisFunctionCallbackConfig struct {

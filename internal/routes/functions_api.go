@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/dash-xd/ratelimiter/auth"
+	"github.com/go-chi/chi/v5"
 )
 
 const aclFunctionMetadataPrefix = "logma:acl:function:"
