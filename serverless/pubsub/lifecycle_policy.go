@@ -232,7 +232,9 @@ func (g *lifecycleGuard) shutdown(reason string) error {
 			g.cancel()
 			return
 		}
-		_, shutdownErr = g.client.Publish(context.Background(), g.shutdownChannel, payload).Result()
+		publishCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, shutdownErr = g.client.Publish(publishCtx, g.shutdownChannel, payload).Result()
 		g.cancel()
 	})
 	return shutdownErr

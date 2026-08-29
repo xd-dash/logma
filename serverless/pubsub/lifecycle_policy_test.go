@@ -1,6 +1,7 @@
 package pubsub
 
 import (
+	"context"
 	"testing"
 	"time"
 )
