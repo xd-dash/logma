@@ -36,7 +36,7 @@ type RuntimeRecord struct {
 	StartedAt       time.Time                `json:"started_at"`
 	UpdatedAt       time.Time                `json:"updated_at"`
 	Subscriptions   []SubscriptionDescriptor `json:"subscriptions"`
-	Lifecycle       LifecyclePolicy          `json:"lifecycle,omitempty"`
+	Lifecycle       Policy          `json:"lifecycle,omitempty"`
 }
 
 func RuntimeRecordKey(namespace, instanceID, requestID string) string {
@@ -94,7 +94,7 @@ type RuntimeLease struct {
 	closeOnce sync.Once
 }
 
-func (cp ControlPlane) RegisterRuntime(ctx context.Context, invocation InvocationInfo, subscriptions []SubscriptionDescriptor, policies ...LifecyclePolicy) (*RuntimeLease, error) {
+func (cp ControlPlane) RegisterRuntime(ctx context.Context, invocation InvocationInfo, subscriptions []SubscriptionDescriptor, policies ...Policy) (*RuntimeLease, error) {
 	namespace := cp.Namespace
 	if namespace == "" {
 		namespace = invocation.Service
@@ -107,7 +107,7 @@ func (cp ControlPlane) RegisterRuntime(ctx context.Context, invocation Invocatio
 		startedAt = time.Now().UTC()
 	}
 	now := time.Now().UTC()
-	var policy LifecyclePolicy
+	var policy Policy
 	if len(policies) > 0 {
 		policy = policies[0]
 	}
@@ -199,7 +199,7 @@ func LoadRuntimeRecord(ctx context.Context, client *redis.Client, key string) (R
 		RequestID:       fields["request_id"],
 		InvocationKey:   fields["invocation_key"],
 		ShutdownChannel: fields["shutdown_channel"],
-		Lifecycle:       LifecyclePolicy(fields["lifecycle"]),
+		Lifecycle:       Policy(fields["lifecycle"]),
 	}
 	if value := fields["started_at"]; value != "" {
 		record.StartedAt, _ = time.Parse(time.RFC3339Nano, value)

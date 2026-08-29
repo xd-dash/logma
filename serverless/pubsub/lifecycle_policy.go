@@ -20,16 +20,17 @@ const (
 	lifecycleTotalWindow = 24 * time.Hour
 )
 
-// LifecyclePolicy selects a package-owned runtime policy. The concrete limits
-// stay inside Logma so callers cannot turn sandbox controls into request input.
-type LifecyclePolicy string
+// Policy selects a package-owned runtime limit profile. Names describe only the
+// concrete mechanism/limit; deployment tiers, licensing, and environment labels
+// belong outside this package.
+type Policy string
 
 const (
-	LifecycleNone           LifecyclePolicy = ""
-	LifecycleSandboxTimer   LifecyclePolicy = "sandbox_timer"
-	LifecycleSandboxTotal   LifecyclePolicy = "sandbox_total"
-	LifecycleSandboxBounded LifecyclePolicy = "sandbox_bounded"
-	LifecycleSandboxNews20M LifecyclePolicy = "sandbox_news_20m"
+	PolicyNone Policy = ""
+	Policy3S Policy = "3s"
+	Policy3Publishes Policy = "3-publishes"
+	Policy30S64Publishes Policy = "30s-64-publishes"
+	Policy20M Policy = "20m"
 )
 
 type lifecyclePolicyConfig struct {
@@ -38,26 +39,26 @@ type lifecyclePolicyConfig struct {
 	maxPublishes int64
 }
 
-func (p LifecyclePolicy) config() (lifecyclePolicyConfig, error) {
+func (p Policy) config() (lifecyclePolicyConfig, error) {
 	switch p {
-	case LifecycleNone:
+	case PolicyNone:
 		return lifecyclePolicyConfig{}, nil
-	case LifecycleSandboxTimer:
+	case Policy3S:
 		return lifecyclePolicyConfig{
 			timer:     3 * time.Second,
 			tickEvery: 250 * time.Millisecond,
 		}, nil
-	case LifecycleSandboxTotal:
+	case Policy3Publishes:
 		return lifecyclePolicyConfig{
 			maxPublishes: 3,
 		}, nil
-	case LifecycleSandboxBounded:
+	case Policy30S64Publishes:
 		return lifecyclePolicyConfig{
 			timer:        30 * time.Second,
 			tickEvery:    500 * time.Millisecond,
 			maxPublishes: 64,
 		}, nil
-	case LifecycleSandboxNews20M:
+	case Policy20M:
 		return lifecyclePolicyConfig{
 			timer:     20 * time.Minute,
 			tickEvery: time.Second,
@@ -109,7 +110,7 @@ func newLifecycleGuard(
 	cancel context.CancelFunc,
 	cp ControlPlane,
 	invocation InvocationInfo,
-	policy LifecyclePolicy,
+	policy Policy,
 ) (*lifecycleGuard, error) {
 	cfg, err := policy.config()
 	if err != nil {

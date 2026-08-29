@@ -30,7 +30,7 @@ type ServiceSpec struct {
 	Invocation    InvocationInfo
 	Channels      ChannelHandlers
 	Subscriptions []SubscriptionDescriptor
-	Lifecycle     LifecyclePolicy
+	Lifecycle     Policy
 	Work          func(ctx context.Context) error
 }
 
@@ -83,10 +83,10 @@ func (sr *Runtime) RecordInvocation(r *http.Request, requestID string) {
 func (sr *Runtime) Configure(spec ServiceSpec) { sr.spec = spec }
 
 func (sr *Runtime) ConfigureDefault(work func(ctx context.Context) error, extraChannels ChannelHandlers) {
-	sr.ConfigureDefaultWithLifecycle(LifecycleNone, work, extraChannels)
+	sr.ConfigureDefaultWithLifecycle(PolicyNone, work, extraChannels)
 }
 
-func (sr *Runtime) ConfigureDefaultWithLifecycle(policy LifecyclePolicy, work func(ctx context.Context) error, extraChannels ChannelHandlers) {
+func (sr *Runtime) ConfigureDefaultWithLifecycle(policy Policy, work func(ctx context.Context) error, extraChannels ChannelHandlers) {
 	channels := make(ChannelHandlers, len(extraChannels)+1)
 	shutdownChannel := sr.ShutdownChannel()
 	channels[shutdownChannel] = sr.DefaultShutdownHandler()
