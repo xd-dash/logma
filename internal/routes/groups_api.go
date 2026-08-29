@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,17 +12,35 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+type oneOrManyRaw []json.RawMessage
+
+func (values *oneOrManyRaw) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 || bytes.Equal(data, []byte("null")) {
+		return nil
+	}
+
+	if data[0] == '[' {
+		return json.Unmarshal(data, (*[]json.RawMessage)(values))
+	}
+
+	*values = append(*values, append(json.RawMessage(nil), data...))
+	return nil
+}
+
 type groupCreateRequest struct {
-	GroupID  string            `json:"groupID,omitempty"`
-	IDs      []string          `json:"ids,omitempty"`
-	Channels []json.RawMessage `json:"channels,omitempty"`
-	Members  []json.RawMessage `json:"members,omitempty"`
+	GroupID  string       `json:"groupID,omitempty"`
+	IDs      []string     `json:"ids,omitempty"`
+	Channels oneOrManyRaw `json:"channels,omitempty"`
+	Members  oneOrManyRaw `json:"members,omitempty"`
 }
 
 type groupInlineMember struct {
-	ID      string          `json:"id,omitempty"`
-	Channel string          `json:"channel,omitempty"`
-	callbackInput
+	ID           string          `json:"id,omitempty"`
+	Channel      string          `json:"channel,omitempty"`
+	CallbackURL  json.RawMessage `json:"callbackURL,omitempty"`
+	CallbackURLs []string        `json:"callbackURLs,omitempty"`
+	Callbacks    json.RawMessage `json:"callbacks,omitempty"`
 }
 
 func saveActiveChannelsGroup(
@@ -302,7 +321,11 @@ func decodeGroupMember(
 	}
 
 	callbacks, err := callbackConfigFromInput(
-		input.callbackInput,
+		callbackInput{
+			CallbackURL:  input.CallbackURL,
+			CallbackURLs: input.CallbackURLs,
+			Callbacks:    input.Callbacks,
+		},
 	)
 	if err != nil {
 		return subscriptionGroupMember{}, err
