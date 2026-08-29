@@ -10,8 +10,8 @@ import (
 
 func TestLifecyclePoliciesCompileThroughEnergyModel(t *testing.T) {
 	tests := []struct {
-		policy        Policy
-		timer         time.Duration
+		policy       Policy
+		timer        time.Duration
 		maxPublishes int64
 	}{
 		{Policy3S, 3 * time.Second, 0},
