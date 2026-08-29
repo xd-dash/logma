@@ -1,8 +1,8 @@
 # Logma ACL profiles
 
-Logma has two authentication profiles.
+Logma defaults to its existing Redis credential authentication path. An optional authentication provider can replace that path with a managed scheme.
 
-## legacy (default)
+## default: no provider
 
 This preserves the existing single-tenant deployment contract:
 
@@ -14,16 +14,16 @@ This preserves the existing single-tenant deployment contract:
 Example:
 
 ```sh
-LOGMA_AUTH_PROFILE=legacy
+# LOGMA_AUTH_PROVIDER intentionally unset
 API_KEY=dev-logma
 REDIS_URI=127.0.0.1:6379
 REDIS_USERNAME=default
 REDISCLI_AUTH=change-me
 ```
 
-## managed
+## managed provider
 
-Managed mode uses Redis ACL credentials for HTTP Basic authentication. The Logma
+The `managed` provider is implemented by `github.com/dash-xd/ratelimiter/auth/profile/managed`. It uses Redis ACL credentials for HTTP Basic authentication. The Logma
 process itself connects as an application administrator. That identity is expected
 to be bootstrapped outside Logma and must be able to manage ACL users, load/delete
 Function libraries, manage Logma control-plane metadata, and operate all channels.
@@ -37,7 +37,7 @@ ACL SETUSER logma-admin reset on >change-this-admin-password ~* &* +@all
 Run Logma with:
 
 ```sh
-LOGMA_AUTH_PROFILE=managed
+LOGMA_AUTH_PROVIDER=managed
 LOGMA_ADMIN_USER=logma-admin
 REDIS_USERNAME=logma-admin
 REDISCLI_AUTH=change-this-admin-password
@@ -129,3 +129,22 @@ LOGMA_ACL_SAVE=true
 only when Redis is configured with an ACL file and the application-admin identity
 may run `ACL SAVE`. Otherwise the deployment/bootstrap layer remains responsible
 for persisting ACL configuration.
+
+
+## Provider boundary
+
+Logma does not define Redis ACL policy itself. When `LOGMA_AUTH_PROVIDER` is
+unset, Logma keeps the historical `X-API-Key` plus `REDISCLI_AUTH` behavior.
+When it is set to `managed`, Logma constructs ratelimiter's managed auth
+provider with Logma-specific namespaces:
+
+```text
+username: logma-tenant-<tenant>
+keys:     logma:tenant:<tenant>:*
+channels: tenant:<tenant>:*
+functions: logma_<tenant>__*
+```
+
+This keeps authentication/authorization policy composable with ratelimiter's
+other profiles and allows future providers to be added without changing Logma's
+core routing and Pub/Sub implementation.
