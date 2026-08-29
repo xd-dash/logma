@@ -1,0 +1,4 @@
+# Managed Logma development bootstrap.
+# Replace the password before use, then disable the default Redis user.
+user default off
+user logma-admin on >CHANGE_ME_WITH_A_LONG_RANDOM_PASSWORD ~* &* +@all
