@@ -19,6 +19,7 @@ permissions:
 jobs:
   build-and-smoke:
     runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -30,14 +31,14 @@ jobs:
           path: .deps/nix-alpine
 
       - name: Prepare Nix builder image
-        uses: dash-xd/nix-alpine@a961d0fb9301c0ceee3c4d718a51f1cc0763c356
+        uses: dash-xd/nix-alpine@80a2821b7571edd09507f9b4349e2f1ed3daf900
         with:
           image-name: nix-alpine:logma-cell
           cache-key: nix-alpine-logma-cell
           toolbox-path: .deps/nix-alpine
 
-      - name: Build OCI archive with cached named Nix volumes
-        uses: dash-xd/nix-alpine/volume-cache@a961d0fb9301c0ceee3c4d718a51f1cc0763c356
+      - name: Build OCI archive with shared Nix cache
+        uses: dash-xd/nix-alpine/volume-cache@80a2821b7571edd09507f9b4349e2f1ed3daf900
         with:
           image-name: nix-alpine:logma-cell
           cache-key: logma-cell-${{ hashFiles('flake.nix', 'go.mod', 'go.sum', 'cmd/**/*.go', 'internal/**/*.go') }}
@@ -52,13 +53,10 @@ jobs:
           shared-cache-public-key: ${{ vars.NIX_SHARED_CACHE_PUBLIC_KEY }}
           shared-cache-private-key: ${{ secrets.NIX_SHARED_CACHE_PRIVATE_KEY }}
           shared-cache-publish-paths: result
-          artifact-name: nix-volume-cache-logma-cell
-          artifact-retention-days: "30"
+          command-timeout: "8m"
+          publish-timeout: "3m"
           command: |
-            if ! nix build path:.#image -L > /workspace/.logma-cell-nix-build.log 2>&1; then
-              tail -n 120 /workspace/.logma-cell-nix-build.log
-              exit 1
-            fi
+            nix build path:.#image -L
             cp -L result /workspace/logma-cell.tar.gz
 
       - name: Load image
