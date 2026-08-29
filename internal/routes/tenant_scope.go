@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	logmaacl "github.com/xd-dash/logma/acl"
+	"github.com/dash-xd/ratelimiter/auth"
 )
 
 func scopeChannelForPrincipal(principal requestPrincipal, channel string) (string, error) {
@@ -17,7 +17,15 @@ func scopeChannelForPrincipal(principal requestPrincipal, channel string) (strin
 		return channel, nil
 	}
 
-	prefix := logmaacl.TenantChannelPrefix(principal.Tenant)
+	provider, err := authProviderFromEnv()
+	if err != nil || provider == nil {
+		return "", errors.New("auth provider unavailable")
+	}
+	scope, err := provider.Scope(principal.Tenant, principal.Username)
+	if err != nil {
+		return "", err
+	}
+	prefix := scope.ChannelPrefix
 	if strings.HasPrefix(channel, prefix) {
 		return channel, nil
 	}
