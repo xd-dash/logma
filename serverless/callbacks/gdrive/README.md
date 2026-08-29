@@ -1,25 +1,29 @@
 # Google Drive callback
 
-This callback uploads a local file to a personal Google Drive account without the Google API SDK. It uses only the Go standard library: the OAuth refresh-token exchange and Drive multipart upload are plain HTTPS requests.
+This callback uploads local files to personal Google Drive accounts without the Google API SDK. OAuth refresh and Drive API calls use only the Go standard library.
 
-Required environment:
+A `gdrive.Registry` maps an opaque `credential_id` to an `Uploader`. Pub/Sub messages carry only that ID through the higher-level `fileflow.Scope`; client IDs, client secrets, access tokens, and refresh tokens never belong in channel names or payloads.
 
-- `GOOGLE_DRIVE_CREDENTIALS_FILE`: path to a Google OAuth client JSON file. Desktop (`installed`), web (`web`), or flat `client_id` / `client_secret` JSON is accepted.
-- `GOOGLE_DRIVE_REFRESH_TOKEN`: personal-account refresh token. Keep this in GitHub Actions secrets or another secret store; do not commit it.
+For one credential, `GOOGLE_DRIVE_CREDENTIALS_FILE` and `GOOGLE_DRIVE_REFRESH_TOKEN` remain supported by `NewFromEnv()`. For multiple personal Drive identities, construct one uploader per secret set and register each under a separate credential ID.
 
-The refresh token must have been minted after granting a Drive scope capable of creating files, such as `https://www.googleapis.com/auth/drive.file`.
+The refresh token must have been minted with a Drive scope capable of creating and finding files created by this app, such as `https://www.googleapis.com/auth/drive.file`.
 
-Payload:
+`UploadRequest.UploadID` provides remote idempotency. When set, Logma stores it in Drive file `appProperties.logma_upload_id` and queries Drive before creating a file. If the object is already present, `Upload` returns it with `AlreadyExists=true` rather than creating a duplicate. The scoped News and market callbacks generate these IDs automatically.
+
+Low-level payload example:
 
 ```json
 {
-  "path": "/var/lib/logma/export/events.jsonl",
-  "name": "events.jsonl",
+  "path": "/var/lib/logma/export/events.ndjson",
+  "name": "events.ndjson",
   "folder_id": "optional-drive-folder-id",
-  "mime_type": "application/x-ndjson"
+  "mime_type": "application/x-ndjson",
+  "upload_id": "stable-idempotency-key"
 }
 ```
 
-The reusable Go API is `gdrive.NewFromEnv()` plus `Uploader.Handle(ctx, payload)` or `Uploader.Upload(ctx, request)`. A small standalone binary is available at `./cmd/logma-gdrive-callback`; it accepts one JSON payload as command-line text or one line on stdin.
+For application flows, prefer `serverless/callbacks/fileflow`: it separates News write/upload channels and market write/rotate-upload channels and scopes them by Drive credential, request, and subscriber.
+
+A small standalone binary remains available at `./cmd/logma-gdrive-callback` for one credential loaded from environment variables.
 
 No live Drive integration test should be run until a real refresh token is supplied through secrets.
