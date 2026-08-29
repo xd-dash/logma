@@ -43,7 +43,7 @@ func managedTenantGroupsAllowed(principal requestPrincipal) bool {
 
 func managedGroupGuard(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if authProfileFromEnv().Name != "managed" {
+		if func() bool { p, _ := authProviderFromEnv(); return p == nil }() {
 			handler(w, r)
 			return
 		}
