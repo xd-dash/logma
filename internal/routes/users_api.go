@@ -169,7 +169,7 @@ func createACLUserHandler(w http.ResponseWriter, r *http.Request) {
 
 func replaceACLUserHandler(w http.ResponseWriter, r *http.Request) {
 	username := strings.TrimSpace(chi.URLParam(r, "username"))
-	if username == "" || username == authProfileFromEnv().AdminUser {
+	if username == "" || username == func() string { p, _ := authProviderFromEnv(); if p == nil { return "" }; return p.AdminUser() }() {
 		http.Error(w, "Invalid user", http.StatusBadRequest)
 		return
 	}
@@ -241,7 +241,7 @@ func replaceACLUserHandler(w http.ResponseWriter, r *http.Request) {
 
 func deleteACLUserHandler(w http.ResponseWriter, r *http.Request) {
 	username := strings.TrimSpace(chi.URLParam(r, "username"))
-	if username == "" || username == authProfileFromEnv().AdminUser {
+	if username == "" || username == func() string { p, _ := authProviderFromEnv(); if p == nil { return "" }; return p.AdminUser() }() {
 		http.Error(w, "Invalid user", http.StatusBadRequest)
 		return
 	}
