@@ -1,0 +1,39 @@
+name: Format versioned PubSub API
+
+on:
+  push:
+    branches: [codex/versioned-pubsub-api-v0.0.1]
+    paths:
+      - .github/automation/gofmt-versioned-pubsub.json
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/versioned-pubsub-api-v0.0.1
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Format
+        run: gofmt -w internal/routes/routes.go internal/routes/routes_api_test.go
+
+      - name: Commit
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'No formatting changes'
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add internal/routes/routes.go internal/routes/routes_api_test.go
+          git commit -m 'gofmt versioned Pub/Sub API'
+          git push origin HEAD:codex/versioned-pubsub-api-v0.0.1
