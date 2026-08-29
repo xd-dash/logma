@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -33,6 +34,7 @@ func TestVersionedPubSubRoutes(t *testing.T) {
 	want := []string{
 		"GET /pubsub/api/v0.0.1/channels/",
 		"POST /pubsub/api/v0.0.1/channels/",
+		"POST /pubsub/api/v0.0.1/channels/save",
 		"GET /pubsub/api/v0.0.1/channels/groups",
 		"POST /pubsub/api/v0.0.1/channels/groups",
 		"GET /pubsub/api/v0.0.1/channels/groups/{groupID}",
@@ -50,47 +52,134 @@ func TestVersionedPubSubRoutes(t *testing.T) {
 	}
 }
 
-func TestCallbackURLFromRequestQueryAliases(t *testing.T) {
+func TestCallbackConfigFromQuerySupportsRepeatedURLs(t *testing.T) {
 	t.Parallel()
 
-	for _, query := range []string{
-		"callbackURL=https%3A%2F%2Fexample.com%2Fone",
-		"callback=https%3A%2F%2Fexample.com%2Ftwo",
-		"callback_url=https%3A%2F%2Fexample.com%2Fthree",
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/?callbackURL=https%3A%2F%2Fexample.com%2Fone&callbackURL=https%3A%2F%2Fexample.com%2Ftwo",
+		nil,
+	)
+
+	config, err := parseCallbackConfigFromRequest(req)
+	if err != nil {
+		t.Fatalf("parse callback config: %v", err)
+	}
+	if len(config.Callbacks) != 2 {
+		t.Fatalf("callbacks = %d, want 2", len(config.Callbacks))
+	}
+}
+
+func TestCallbackConfigFromJSONSupportsStringAndList(t *testing.T) {
+	t.Parallel()
+
+	for _, body := range []string{
+		`{"callbackURL":"https://example.com/one"}`,
+		`{"callbackURL":["https://example.com/one","https://example.com/two"]}`,
+		`{"callbackURLs":["https://example.com/one","https://example.com/two"]}`,
 	} {
 		req := httptest.NewRequest(
-			http.MethodGet,
-			"/?"+query,
-			nil,
+			http.MethodPost,
+			"/",
+			strings.NewReader(body),
 		)
 
-		got, err := callbackURLFromRequest(req)
+		config, err := parseCallbackConfigFromRequest(req)
 		if err != nil {
-			t.Fatalf("callbackURLFromRequest(%q): %v", query, err)
+			t.Fatalf("parse callback config %s: %v", body, err)
 		}
-		if !strings.HasPrefix(got, "https://example.com/") {
-			t.Fatalf("callbackURLFromRequest(%q) = %q", query, got)
+		if len(config.Callbacks) == 0 {
+			t.Fatalf("parse callback config %s returned no callbacks", body)
 		}
 	}
 }
 
-func TestCallbackURLFromRequestJSON(t *testing.T) {
+func TestCallbackConfigFromJSONSupportsOneOrManySchemes(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(
-		http.MethodPost,
-		"/",
-		strings.NewReader(
-			`{"callbackURL":"https://example.com/callback"}`,
-		),
-	)
+	for _, body := range []string{
+		`{"callbacks":{"type":"http","url":"https://example.com/one"}}`,
+		`{"callbacks":[{"type":"http","url":"https://example.com/one"},{"type":"http","urls":["https://example.com/two","https://example.com/three"]}]}`,
+		`{"callbacks":{"type":"custom","config":{"topic":"example"}}}`,
+	} {
+		req := httptest.NewRequest(
+			http.MethodPost,
+			"/",
+			strings.NewReader(body),
+		)
 
-	got, err := callbackURLFromRequest(req)
-	if err != nil {
-		t.Fatalf("callbackURLFromRequest: %v", err)
+		config, err := parseCallbackConfigFromRequest(req)
+		if err != nil {
+			t.Fatalf("parse callback config %s: %v", body, err)
+		}
+		if len(config.Callbacks) == 0 {
+			t.Fatalf("parse callback config %s returned no callbacks", body)
+		}
 	}
-	if got != "https://example.com/callback" {
-		t.Fatalf("callback URL = %q", got)
+}
+
+func TestStoredCallbackConfigBackwardsCompatibility(t *testing.T) {
+	t.Parallel()
+
+	legacy, err := decodeStoredCallbackConfig(
+		"https://example.com/callback",
+	)
+	if err != nil {
+		t.Fatalf("decode legacy callback: %v", err)
+	}
+	if len(legacy.Callbacks) != 1 ||
+		legacy.Callbacks[0].URL != "https://example.com/callback" {
+		t.Fatalf("unexpected legacy callback: %#v", legacy)
+	}
+
+	rich := callbackConfig{
+		Version: callbackConfigVersion,
+		Callbacks: []callbackScheme{
+			{
+				Type: "http",
+				URLs: []string{
+					"https://example.com/one",
+					"https://example.com/two",
+				},
+			},
+			{
+				Type:   "custom",
+				Config: json.RawMessage(`{"topic":"example"}`),
+			},
+		},
+	}
+
+	stored, err := encodeStoredCallbackConfig(rich)
+	if err != nil {
+		t.Fatalf("encode rich callback: %v", err)
+	}
+	if !strings.HasPrefix(stored, "{") {
+		t.Fatalf("rich callback was not stored as schema JSON: %q", stored)
+	}
+
+	decoded, err := decodeStoredCallbackConfig(stored)
+	if err != nil {
+		t.Fatalf("decode rich callback: %v", err)
+	}
+	if len(decoded.Callbacks) != 2 {
+		t.Fatalf("decoded callbacks = %d, want 2", len(decoded.Callbacks))
+	}
+}
+
+func TestOneOrManyRaw(t *testing.T) {
+	t.Parallel()
+
+	for _, body := range []string{
+		`{"channels":{"channel":"one","callbackURL":"https://example.com/one"}}`,
+		`{"channels":[{"channel":"one","callbackURL":"https://example.com/one"},"1234"]}`,
+	} {
+		var request groupCreateRequest
+		if err := json.Unmarshal([]byte(body), &request); err != nil {
+			t.Fatalf("unmarshal %s: %v", body, err)
+		}
+		if len(request.Channels) == 0 {
+			t.Fatalf("unmarshal %s produced no channels", body)
+		}
 	}
 }
 
