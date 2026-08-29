@@ -31,6 +31,14 @@ func TestLifecyclePoliciesArePackageOwned(t *testing.T) {
 		t.Fatalf("unexpected bounded policy: %#v", bounded)
 	}
 
+	news20m, err := LifecycleSandboxNews20M.config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if news20m.timer != 20*time.Minute || news20m.tickEvery != time.Second || news20m.maxPublishes != 0 {
+		t.Fatalf("unexpected 20-minute news policy: %#v", news20m)
+	}
+
 	if _, err := LifecyclePolicy("request-controlled").config(); err == nil {
 		t.Fatal("expected unknown lifecycle policy to fail")
 	}

@@ -29,6 +29,7 @@ const (
 	LifecycleSandboxTimer   LifecyclePolicy = "sandbox_timer"
 	LifecycleSandboxTotal   LifecyclePolicy = "sandbox_total"
 	LifecycleSandboxBounded LifecyclePolicy = "sandbox_bounded"
+	LifecycleSandboxNews20M LifecyclePolicy = "sandbox_news_20m"
 )
 
 type lifecyclePolicyConfig struct {
@@ -55,6 +56,11 @@ func (p LifecyclePolicy) config() (lifecyclePolicyConfig, error) {
 			timer:        30 * time.Second,
 			tickEvery:    500 * time.Millisecond,
 			maxPublishes: 64,
+		}, nil
+	case LifecycleSandboxNews20M:
+		return lifecyclePolicyConfig{
+			timer:     20 * time.Minute,
+			tickEvery: time.Second,
 		}, nil
 	default:
 		return lifecyclePolicyConfig{}, fmt.Errorf("unknown lifecycle policy %q", p)
