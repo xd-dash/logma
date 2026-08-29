@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/redis/go-redis/v9"
-	logmaacl "github.com/xd-dash/logma/acl"
+	"github.com/dash-xd/ratelimiter/auth"
 )
 
 type redisFunctionCallbackConfig struct {
@@ -18,7 +18,15 @@ type redisFunctionCallbackConfig struct {
 
 func canonicalTenantKey(tenant, key string) string {
 	key = strings.TrimSpace(key)
-	return logmaacl.TenantKeyPrefix(tenant) + key
+	provider, err := authProviderFromEnv()
+	if err != nil || provider == nil {
+		return key
+	}
+	scope, err := provider.Scope(tenant, "")
+	if err != nil {
+		return key
+	}
+	return scope.KeyPrefix + key
 }
 
 func dispatchRedisFunctionCallback(
@@ -39,7 +47,17 @@ func dispatchRedisFunctionCallback(
 		return
 	}
 
-	functionName, err := logmaacl.TenantFunctionName(tenant, strings.TrimSpace(cfg.Name))
+	provider, providerErr := authProviderFromEnv()
+	if providerErr != nil || provider == nil {
+		fmt.Printf("redis-function callback provider error: %v\n", providerErr)
+		return
+	}
+	scope, scopeErr := provider.Scope(tenant, "")
+	if scopeErr != nil {
+		fmt.Printf("redis-function callback scope error: %v\n", scopeErr)
+		return
+	}
+	functionName, err := auth.FunctionName(scope, strings.TrimSpace(cfg.Name))
 	if err != nil {
 		fmt.Printf("redis-function callback name error: %v\n", err)
 		return
