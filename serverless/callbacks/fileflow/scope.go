@@ -57,22 +57,14 @@ func (s Scope) Dir(base string) (string, error) {
 	return filepath.Join(base, s.CredentialID, s.RequestID, s.SubscriberID), nil
 }
 
-func NewsChannels(s Scope) (Channels, error) {
-	return channelsFor(s, "news")
-}
-
-func MarketChannels(s Scope) (Channels, error) {
-	return channelsFor(s, "market")
-}
+func NewsChannels(s Scope) (Channels, error)   { return channelsFor(s, "news") }
+func MarketChannels(s Scope) (Channels, error) { return channelsFor(s, "market") }
 
 func channelsFor(s Scope, kind string) (Channels, error) {
-	key, err := s.Key()
-	if err != nil {
+	if err := s.Validate(); err != nil {
 		return Channels{}, err
 	}
-	prefix := "scope:gdrive:" + strings.ReplaceAll(key, ":", ":request:")
-	// Keep the channel readable while the filesystem key remains compact.
-	prefix = "scope:gdrive:" + s.CredentialID + ":request:" + s.RequestID + ":subscriber:" + s.SubscriberID + ":" + kind
+	prefix := "scope:gdrive:" + s.CredentialID + ":request:" + s.RequestID + ":subscriber:" + s.SubscriberID + ":" + kind
 	return Channels{Write: prefix + ":write", Upload: prefix + ":upload"}, nil
 }
 
