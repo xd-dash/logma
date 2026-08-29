@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
-	logmaacl "github.com/xd-dash/logma/acl"
+	"github.com/dash-xd/ratelimiter/auth"
 )
 
 const aclFunctionMetadataPrefix = "logma:acl:function:"
@@ -50,22 +50,42 @@ func uploadTenantFunctionHandler(w http.ResponseWriter, r *http.Request) {
 	if principal.Admin {
 		tenant = strings.TrimSpace(request.Tenant)
 	}
-	if err := logmaacl.ValidateIdentifier(tenant); err != nil {
+	if err := auth.ValidateIdentifier(tenant); err != nil {
 		http.Error(w, "Invalid tenant: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if !principal.Admin && !principal.Policy.Has(logmaacl.CapabilityFunctions) {
+	if !principal.Admin && !principal.Policy.Has(auth.CapabilityFunctions) {
 		http.Error(w, "This ACL profile does not allow function callbacks", http.StatusForbidden)
 		return
 	}
 
 	name := strings.TrimSpace(request.Name)
-	functionName, err := logmaacl.TenantFunctionName(tenant, name)
+	functionName, err := func() (string, error) {
+		provider, err := authProviderFromEnv()
+		if err != nil || provider == nil {
+			return "", errors.New("auth provider unavailable")
+		}
+		scope, err := provider.Scope(tenant, "")
+		if err != nil {
+			return "", err
+		}
+		return auth.FunctionName(scope, name)
+	}()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	libraryName, err := logmaacl.TenantLibraryName(tenant, name)
+	libraryName, err := func() (string, error) {
+		provider, err := authProviderFromEnv()
+		if err != nil || provider == nil {
+			return "", errors.New("auth provider unavailable")
+		}
+		scope, err := provider.Scope(tenant, "")
+		if err != nil {
+			return "", err
+		}
+		return auth.LibraryName(scope, name)
+	}()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -156,7 +176,7 @@ func listTenantFunctionsHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := logmaacl.ValidateIdentifier(tenant); err != nil {
+	if err := auth.ValidateIdentifier(tenant); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -195,11 +215,11 @@ func deleteTenantFunctionHandler(w http.ResponseWriter, r *http.Request) {
 	if principal.Admin {
 		tenant = strings.TrimSpace(r.URL.Query().Get("tenant"))
 	}
-	if err := logmaacl.ValidateIdentifier(tenant); err != nil {
+	if err := auth.ValidateIdentifier(tenant); err != nil {
 		http.Error(w, "Invalid tenant", http.StatusBadRequest)
 		return
 	}
-	if !principal.Admin && !principal.Policy.Has(logmaacl.CapabilityFunctions) {
+	if !principal.Admin && !principal.Policy.Has(auth.CapabilityFunctions) {
 		http.Error(w, "This ACL profile does not allow functions", http.StatusForbidden)
 		return
 	}
@@ -230,14 +250,24 @@ func validateTenantFunctionCallback(principal requestPrincipal, callback callbac
 	if principal.Admin {
 		return errors.New("admin subscriptions must specify tenant execution through a tenant identity")
 	}
-	if !principal.Policy.Has(logmaacl.CapabilityFunctions) {
+	if !principal.Policy.Has(auth.CapabilityFunctions) {
 		return errors.New("tenant ACL profile does not allow function callbacks")
 	}
 	var cfg redisFunctionCallbackConfig
 	if err := json.Unmarshal(callback.Config, &cfg); err != nil {
 		return errors.New("redis-function callback config must be an object")
 	}
-	if _, err := logmaacl.TenantFunctionName(principal.Tenant, cfg.Name); err != nil {
+	if _, err := func() (string, error) {
+		provider, err := authProviderFromEnv()
+		if err != nil || provider == nil {
+			return "", errors.New("auth provider unavailable")
+		}
+		scope, err := provider.Scope(principal.Tenant, principal.Username)
+		if err != nil {
+			return "", err
+		}
+		return auth.FunctionName(scope, cfg.Name)
+	}(); err != nil {
 		return err
 	}
 	return nil
