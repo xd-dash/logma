@@ -49,8 +49,11 @@ var (
 )
 
 type SubscriptionListener struct {
-	Channel   string
-	Callbacks callbackConfig
+	Channel        string
+	Callbacks      callbackConfig
+	Tenant         string
+	RedisClient    *redis.Client
+	OwnRedisClient bool
 }
 
 type PublishRequest struct {
@@ -367,6 +370,18 @@ func startSubscriptionWithCallbacks(
 	channelName string,
 	callbacks callbackConfig,
 ) (*subscriptionInfo, error) {
+	return startSubscriptionForPrincipal(
+		channelName,
+		callbacks,
+		requestPrincipal{},
+	)
+}
+
+func startSubscriptionForPrincipal(
+	channelName string,
+	callbacks callbackConfig,
+	principal requestPrincipal,
+) (*subscriptionInfo, error) {
 	if channelName == "" {
 		return nil, errors.New("channel name is empty")
 	}
@@ -386,7 +401,19 @@ func startSubscriptionWithCallbacks(
 		return nil, errSubscriptionManagerStopped
 	}
 
-	pubsub := client.Subscribe(
+	subscriptionClient := client
+	ownSubscriptionClient := false
+	if principal.Tenant != "" {
+		subscriptionClient = redis.NewClient(
+			redisOptionsForCredentials(
+				principal.Username,
+				principal.Password,
+			),
+		)
+		ownSubscriptionClient = true
+	}
+
+	pubsub := subscriptionClient.Subscribe(
 		subCtx,
 		channelName,
 	)
@@ -479,8 +506,11 @@ func startSubscriptionWithCallbacks(
 		subCtx,
 		pubsub,
 		SubscriptionListener{
-			Channel:   channelName,
-			Callbacks: callbacks,
+			Channel:        channelName,
+			Callbacks:      callbacks,
+			Tenant:         principal.Tenant,
+			RedisClient:    subscriptionClient,
+			OwnRedisClient: ownSubscriptionClient,
 		},
 		info,
 	)
@@ -498,6 +528,9 @@ func runSubscription(
 
 	defer dispatcher.close()
 	defer manager.unregister(info.Key)
+	if listener.OwnRedisClient && listener.RedisClient != nil {
+		defer listener.RedisClient.Close()
+	}
 
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(
@@ -571,6 +604,8 @@ func runSubscription(
 				dispatcher,
 				listener.Callbacks,
 				message,
+				listener.Tenant,
+				listener.RedisClient,
 			)
 
 			if message.Type == "Signal" &&
@@ -680,6 +715,18 @@ func activeChannelsHandler(
 		return
 	}
 
+	if principal, ok := principalFromRequest(r); ok &&
+		principal.Tenant != "" {
+		prefix := "tenant:" + principal.Tenant + ":"
+		filtered := channels[:0]
+		for _, channel := range channels {
+			if strings.HasPrefix(channel, prefix) {
+				filtered = append(filtered, channel)
+			}
+		}
+		channels = filtered
+	}
+
 	w.Header().Set(
 		"Content-Type",
 		"application/json",
@@ -761,7 +808,7 @@ func NewRouter() http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.Logger)
-	r.Use(authenticateAPIKey)
+	r.Use(authenticateRequest)
 
 	// Legacy API surface. Keep this available while callers move to the
 	// versioned /pubsub API.
@@ -777,18 +824,35 @@ func NewRouter() http.Handler {
 
 	// Canonical public Pub/Sub API. Channels remain runtime callback
 	// subscriptions; subscription groups are saved channel/callback sets.
+	r.Get(publicAPIPrefix+"/auth/profile", authProfileHandler)
+
+	r.Route(publicAPIPrefix+"/users", func(r chi.Router) {
+		r.Use(requireApplicationAdmin)
+		r.Get("/", listACLUsersHandler)
+		r.Post("/", createACLUserHandler)
+		r.Put("/{username}", replaceACLUserHandler)
+		r.Delete("/{username}", deleteACLUserHandler)
+	})
+
+	r.Route(publicAPIPrefix+"/functions", func(r chi.Router) {
+		r.Get("/", listTenantFunctionsHandler)
+		r.Post("/", uploadTenantFunctionHandler)
+		r.Delete("/{name}", deleteTenantFunctionHandler)
+	})
+
 	r.Route(publicAPIPrefix+"/channels", func(r chi.Router) {
 		r.Get("/", activeChannelsHandler)
 		r.Post("/", createChannelHandler)
 
-		r.Post("/save", saveActiveChannelsGroup)
-		r.Get("/groups", listSubscriptionGroups)
-		r.Post("/groups", createSubscriptionGroup)
-		r.Get("/groups/{groupID}", getSubscriptionGroup)
-		r.Delete("/groups/{groupID}", deleteSubscriptionGroup)
-		r.Post("/groups/{groupID}/load", loadSubscriptionGroup)
+		r.Post("/save", managedGroupGuard(saveActiveChannelsGroup))
+		r.Get("/groups", managedGroupGuard(listSubscriptionGroups))
+		r.Post("/groups", managedGroupGuard(createSubscriptionGroup))
+		r.Get("/groups/{groupID}", managedGroupGuard(getSubscriptionGroup))
+		r.Delete("/groups/{groupID}", managedGroupGuard(deleteSubscriptionGroup))
+		r.Post("/groups/{groupID}/load", managedGroupGuard(loadSubscriptionGroup))
 
 		r.Post("/{channelName}", createChannelHandler)
+		r.Post("/{channelName}/publish", publishChannelHandler)
 		r.Get("/{channelName}/subscribe", subscribeHandler)
 		r.Post("/{channelName}/subscribe", subscribeHandler)
 	})
@@ -885,9 +949,25 @@ func startChannelCallback(
 		return
 	}
 
-	info, err := startSubscriptionWithCallbacks(
+	principal, _ := principalFromRequest(r)
+	if authProfileFromEnv().Name == "managed" && principal.Tenant != "" {
+		channelName, err = scopeChannelForPrincipal(principal, channelName)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		for _, callback := range callbacks.Callbacks {
+			if err := validateTenantFunctionCallback(principal, callback); err != nil {
+				http.Error(w, err.Error(), http.StatusForbidden)
+				return
+			}
+		}
+	}
+
+	info, err := startSubscriptionForPrincipal(
 		channelName,
 		callbacks,
+		principal,
 	)
 	if err != nil {
 		fmt.Printf(
