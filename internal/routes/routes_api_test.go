@@ -32,6 +32,14 @@ func TestVersionedPubSubRoutes(t *testing.T) {
 	}
 
 	want := []string{
+		"GET /pubsub/api/v0.0.1/auth/profile",
+		"GET /pubsub/api/v0.0.1/users/",
+		"POST /pubsub/api/v0.0.1/users/",
+		"PUT /pubsub/api/v0.0.1/users/{username}",
+		"DELETE /pubsub/api/v0.0.1/users/{username}",
+		"GET /pubsub/api/v0.0.1/functions/",
+		"POST /pubsub/api/v0.0.1/functions/",
+		"DELETE /pubsub/api/v0.0.1/functions/{name}",
 		"GET /pubsub/api/v0.0.1/channels/",
 		"POST /pubsub/api/v0.0.1/channels/",
 		"POST /pubsub/api/v0.0.1/channels/save",
@@ -41,6 +49,7 @@ func TestVersionedPubSubRoutes(t *testing.T) {
 		"DELETE /pubsub/api/v0.0.1/channels/groups/{groupID}",
 		"POST /pubsub/api/v0.0.1/channels/groups/{groupID}/load",
 		"POST /pubsub/api/v0.0.1/channels/{channelName}",
+		"POST /pubsub/api/v0.0.1/channels/{channelName}/publish",
 		"GET /pubsub/api/v0.0.1/channels/{channelName}/subscribe",
 		"POST /pubsub/api/v0.0.1/channels/{channelName}/subscribe",
 	}
