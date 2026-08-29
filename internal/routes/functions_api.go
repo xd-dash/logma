@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strings"
 
-	logmaacl "github.com/xd-dash/logma/acl"
 	"github.com/go-chi/chi/v5"
+	logmaacl "github.com/xd-dash/logma/acl"
 )
 
 const aclFunctionMetadataPrefix = "logma:acl:function:"

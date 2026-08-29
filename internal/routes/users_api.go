@@ -12,9 +12,9 @@ import (
 	"sort"
 	"strings"
 
-	logmaacl "github.com/xd-dash/logma/acl"
 	"github.com/go-chi/chi/v5"
 	"github.com/redis/go-redis/v9"
+	logmaacl "github.com/xd-dash/logma/acl"
 )
 
 const aclUserMetadataPrefix = "logma:acl:user:"

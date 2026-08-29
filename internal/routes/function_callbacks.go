@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	logmaacl "github.com/xd-dash/logma/acl"
 	"github.com/redis/go-redis/v9"
+	logmaacl "github.com/xd-dash/logma/acl"
 )
 
 type redisFunctionCallbackConfig struct {

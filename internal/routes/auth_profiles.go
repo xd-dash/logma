@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	logmaacl "github.com/xd-dash/logma/acl"
 	legacyprofile "github.com/xd-dash/logma/acl/profile/legacy"
 	managedprofile "github.com/xd-dash/logma/acl/profile/managed"
-	"github.com/redis/go-redis/v9"
 )
 
 type principalContextKey struct{}
