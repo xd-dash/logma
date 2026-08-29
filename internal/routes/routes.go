@@ -999,7 +999,7 @@ func saveSubscriptionGroup(
 	groupID := generateGroupID()
 
 	for _, key := range activeSubscriptions {
-		callbackURL, err := client.Get(
+		storedCallbacks, err := client.Get(
 			rootCtx,
 			key,
 		).Result()
@@ -1046,7 +1046,7 @@ func saveSubscriptionGroup(
 		if err := client.Set(
 			rootCtx,
 			subscriptionKey,
-			callbackURL,
+			storedCallbacks,
 			0,
 		).Err(); err != nil {
 			http.Error(
@@ -1102,7 +1102,7 @@ func loadSubscriptionGroup(
 	loaded := 0
 
 	for _, key := range groupMembers {
-		callbackURL, err := client.Get(
+		storedCallbacks, err := client.Get(
 			rootCtx,
 			key,
 		).Result()
@@ -1134,9 +1134,21 @@ func loadSubscriptionGroup(
 			continue
 		}
 
-		if _, err := startSubscription(
+		callbacks, err := decodeStoredCallbackConfig(
+			storedCallbacks,
+		)
+		if err != nil {
+			fmt.Printf(
+				"Error decoding callbacks for channel %s: %v\n",
+				channelName,
+				err,
+			)
+			continue
+		}
+
+		if _, err := startSubscriptionWithCallbacks(
 			channelName,
-			callbackURL,
+			callbacks,
 		); err != nil {
 			fmt.Printf(
 				"Error loading subscription for channel %s: %v\n",
@@ -1329,7 +1341,7 @@ func readSubscriptionGroup(
 	)
 
 	for _, key := range keys {
-		callbackURL, err := client.Get(
+		storedCallbacks, err := client.Get(
 			rootCtx,
 			key,
 		).Result()
@@ -1360,12 +1372,19 @@ func readSubscriptionGroup(
 			continue
 		}
 
+		callbacks, err := decodeStoredCallbackConfig(
+			storedCallbacks,
+		)
+		if err != nil {
+			return nil, err
+		}
+
 		members = append(
 			members,
 			subscriptionGroupMember{
 				SubscriptionID: parts[0],
 				Channel:        parts[1],
-				CallbackURL:    callbackURL,
+				Callbacks:      callbacks.Callbacks,
 			},
 		)
 	}
