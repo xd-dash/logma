@@ -2,9 +2,12 @@ package routes
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"sort"
@@ -31,6 +34,7 @@ var (
 
 const (
 	apiKeyHeader               = "X-API-Key"
+	publicAPIPrefix             = "/pubsub/api/v0.0.1"
 	activeSubscriptionsPattern = "active_subscriptions:%s:%s"
 	subscriptionGroupsPrefix   = "subscription_groups"
 
@@ -71,6 +75,17 @@ type subscribeResponse struct {
 	SubscriptionID string `json:"subscriptionID"`
 	Channel        string `json:"channel"`
 	CallbackURL    string `json:"callbackURL"`
+}
+
+type subscriptionGroupMember struct {
+	SubscriptionID string `json:"subscriptionID"`
+	Channel        string `json:"channel"`
+	CallbackURL    string `json:"callbackURL"`
+}
+
+type subscriptionGroupResponse struct {
+	GroupID string                    `json:"groupID"`
+	Members []subscriptionGroupMember `json:"members"`
 }
 
 type callbackJob struct {
@@ -733,80 +748,120 @@ func NewRouter() http.Handler {
 	r.Use(middleware.Logger)
 	r.Use(authenticateAPIKey)
 
+	// Legacy API surface. Keep this available while callers move to the
+	// versioned /pubsub API.
 	r.Route("/channels", func(r chi.Router) {
-		r.Post(
-			"/{channelName}/subscribe",
-			subscribeHandler,
-		)
-
-		r.Get(
-			"/",
-			activeChannelsHandler,
-		)
-
-		r.Post(
-			"/groups/save",
-			saveSubscriptionGroup,
-		)
-
-		r.Get(
-			"/groups/load/{groupID}",
-			loadSubscriptionGroup,
-		)
-
-		r.Get(
-			"/groups",
-			listSubscriptionGroups,
-		)
+		r.Post("/{channelName}/subscribe", subscribeHandler)
+		r.Get("/", activeChannelsHandler)
+		r.Post("/groups/save", saveSubscriptionGroup)
+		r.Get("/groups/load/{groupID}", loadSubscriptionGroup)
+		r.Get("/groups", listSubscriptionGroups)
 	})
 
-	r.Get(
-		"/bootstrap",
-		bootstrapHandler,
-	)
+	r.Get("/bootstrap", bootstrapHandler)
+
+	// Canonical public Pub/Sub API. Channels remain runtime callback
+	// subscriptions; subscription groups are saved channel/callback sets.
+	r.Route(publicAPIPrefix+"/channels", func(r chi.Router) {
+		r.Get("/", activeChannelsHandler)
+		r.Post("/", createChannelHandler)
+
+		r.Get("/groups", listSubscriptionGroups)
+		r.Post("/groups", saveSubscriptionGroup)
+		r.Get("/groups/{groupID}", getSubscriptionGroup)
+		r.Delete("/groups/{groupID}", deleteSubscriptionGroup)
+		r.Post("/groups/{groupID}/load", loadSubscriptionGroup)
+
+		r.Post("/{channelName}", createChannelHandler)
+		r.Get("/{channelName}/subscribe", subscribeHandler)
+		r.Post("/{channelName}/subscribe", subscribeHandler)
+	})
 
 	return r
+}
+
+func createChannelHandler(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	channelName := strings.TrimSpace(
+		chi.URLParam(r, "channelName"),
+	)
+	if channelName == "" {
+		channelName = strings.TrimSpace(
+			r.URL.Query().Get("name"),
+		)
+	}
+	if channelName == "" {
+		var err error
+		channelName, err = generateChannelName()
+		if err != nil {
+			http.Error(
+				w,
+				"Error generating channel name",
+				http.StatusInternalServerError,
+			)
+			return
+		}
+	}
+
+	startChannelCallback(
+		w,
+		r,
+		channelName,
+	)
 }
 
 func subscribeHandler(
 	w http.ResponseWriter,
 	r *http.Request,
 ) {
-	channelName := chi.URLParam(
-		r,
-		"channelName",
+	channelName := strings.TrimSpace(
+		chi.URLParam(r, "channelName"),
 	)
-
-	var requestBody struct {
-		CallbackURL string `json:"callbackURL"`
-	}
-
-	if err := json.NewDecoder(
-		r.Body,
-	).Decode(&requestBody); err != nil {
+	if channelName == "" {
 		http.Error(
 			w,
-			"Failed to parse request body",
+			"Channel name is required",
 			http.StatusBadRequest,
 		)
 		return
 	}
 
-	callbackURL := requestBody.CallbackURL
+	startChannelCallback(
+		w,
+		r,
+		channelName,
+	)
+}
+
+func startChannelCallback(
+	w http.ResponseWriter,
+	r *http.Request,
+	channelName string,
+) {
+	callbackURL, err := callbackURLFromRequest(r)
+	if err != nil {
+		http.Error(
+			w,
+			err.Error(),
+			http.StatusBadRequest,
+		)
+		return
+	}
 
 	if callbackURL == "" {
 		callbackURL = os.Getenv(
 			"PUBSUB_DEFAULT_CALLBACK_URL",
 		)
-
-		if callbackURL == "" {
-			http.Error(
-				w,
-				"Default callback URL not set",
-				http.StatusInternalServerError,
-			)
-			return
-		}
+	}
+	if callbackURL == "" {
+		http.Error(
+			w,
+			"Callback URL is required",
+			http.StatusBadRequest,
+		)
+		return
 	}
 
 	info, err := startSubscription(
@@ -838,7 +893,11 @@ func subscribeHandler(
 		"Content-Type",
 		"application/json",
 	)
-	w.WriteHeader(http.StatusCreated)
+	if r.Method == http.MethodGet {
+		w.WriteHeader(http.StatusOK)
+	} else {
+		w.WriteHeader(http.StatusCreated)
+	}
 
 	if err := json.NewEncoder(
 		w,
@@ -848,6 +907,58 @@ func subscribeHandler(
 			err,
 		)
 	}
+}
+
+func callbackURLFromRequest(
+	r *http.Request,
+) (string, error) {
+	for _, key := range []string{
+		"callbackURL",
+		"callback",
+		"callback_url",
+	} {
+		if value := strings.TrimSpace(
+			r.URL.Query().Get(key),
+		); value != "" {
+			return value, nil
+		}
+	}
+
+	if r.Body == nil {
+		return "", nil
+	}
+
+	var requestBody struct {
+		CallbackURL string `json:"callbackURL"`
+	}
+
+	if err := json.NewDecoder(
+		r.Body,
+	).Decode(&requestBody); err != nil {
+		if errors.Is(err, io.EOF) {
+			return "", nil
+		}
+
+		return "", errors.New(
+			"Failed to parse request body",
+		)
+	}
+
+	return strings.TrimSpace(
+		requestBody.CallbackURL,
+	), nil
+}
+
+func generateChannelName() (string, error) {
+	var random [8]byte
+
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", err
+	}
+
+	return "channel-" + hex.EncodeToString(
+		random[:],
+	), nil
 }
 
 func generateGroupID() string {
@@ -1113,6 +1224,185 @@ func extractGroupChannelName(
 	}
 
 	return parts[1], true
+}
+
+func getSubscriptionGroup(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	groupID := strings.TrimSpace(
+		chi.URLParam(r, "groupID"),
+	)
+	members, err := readSubscriptionGroup(groupID)
+	if err != nil {
+		http.Error(
+			w,
+			"Error retrieving subscription group data",
+			http.StatusInternalServerError,
+		)
+		return
+	}
+	if len(members) == 0 {
+		http.Error(
+			w,
+			"Subscription group not found",
+			http.StatusNotFound,
+		)
+		return
+	}
+
+	w.Header().Set(
+		"Content-Type",
+		"application/json",
+	)
+	w.WriteHeader(http.StatusOK)
+
+	if err := json.NewEncoder(w).Encode(
+		subscriptionGroupResponse{
+			GroupID: groupID,
+			Members: members,
+		},
+	); err != nil {
+		fmt.Printf(
+			"Error encoding subscription group: %v\n",
+			err,
+		)
+	}
+}
+
+func deleteSubscriptionGroup(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	groupID := strings.TrimSpace(
+		chi.URLParam(r, "groupID"),
+	)
+	keys, err := scanKeys(
+		fmt.Sprintf(
+			"%s:%s:*",
+			subscriptionGroupsPrefix,
+			groupID,
+		),
+	)
+	if err != nil {
+		http.Error(
+			w,
+			"Error retrieving subscription group data",
+			http.StatusInternalServerError,
+		)
+		return
+	}
+	if len(keys) == 0 {
+		http.Error(
+			w,
+			"Subscription group not found",
+			http.StatusNotFound,
+		)
+		return
+	}
+
+	deleted, err := client.Del(
+		rootCtx,
+		keys...,
+	).Result()
+	if err != nil {
+		http.Error(
+			w,
+			"Error deleting subscription group",
+			http.StatusInternalServerError,
+		)
+		return
+	}
+
+	w.Header().Set(
+		"Content-Type",
+		"application/json",
+	)
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(
+		map[string]interface{}{
+			"groupID": groupID,
+			"deleted": deleted,
+		},
+	)
+}
+
+func readSubscriptionGroup(
+	groupID string,
+) ([]subscriptionGroupMember, error) {
+	keys, err := scanKeys(
+		fmt.Sprintf(
+			"%s:%s:*",
+			subscriptionGroupsPrefix,
+			groupID,
+		),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	members := make(
+		[]subscriptionGroupMember,
+		0,
+		len(keys),
+	)
+
+	for _, key := range keys {
+		callbackURL, err := client.Get(
+			rootCtx,
+			key,
+		).Result()
+		if err != nil {
+			if errors.Is(err, redis.Nil) {
+				continue
+			}
+			return nil, err
+		}
+
+		prefix := fmt.Sprintf(
+			"%s:%s:",
+			subscriptionGroupsPrefix,
+			groupID,
+		)
+		remainder := strings.TrimPrefix(
+			key,
+			prefix,
+		)
+		parts := strings.SplitN(
+			remainder,
+			":",
+			2,
+		)
+		if len(parts) != 2 ||
+			parts[0] == "" ||
+			parts[1] == "" {
+			continue
+		}
+
+		members = append(
+			members,
+			subscriptionGroupMember{
+				SubscriptionID: parts[0],
+				Channel:        parts[1],
+				CallbackURL:    callbackURL,
+			},
+		)
+	}
+
+	sort.Slice(
+		members,
+		func(i, j int) bool {
+			if members[i].Channel == members[j].Channel {
+				return members[i].SubscriptionID <
+					members[j].SubscriptionID
+			}
+
+			return members[i].Channel <
+				members[j].Channel
+		},
+	)
+
+	return members, nil
 }
 
 func listSubscriptionGroups(
