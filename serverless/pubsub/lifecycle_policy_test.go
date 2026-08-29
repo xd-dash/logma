@@ -7,7 +7,7 @@ import (
 )
 
 func TestLifecyclePoliciesArePackageOwned(t *testing.T) {
-	timer, err := LifecycleSandboxTimer.config()
+	timer, err := Policy3S.config()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -15,7 +15,7 @@ func TestLifecyclePoliciesArePackageOwned(t *testing.T) {
 		t.Fatalf("unexpected timer policy: %#v", timer)
 	}
 
-	total, err := LifecycleSandboxTotal.config()
+	total, err := Policy3Publishes.config()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,7 +23,7 @@ func TestLifecyclePoliciesArePackageOwned(t *testing.T) {
 		t.Fatalf("unexpected total policy: %#v", total)
 	}
 
-	bounded, err := LifecycleSandboxBounded.config()
+	bounded, err := Policy30S64Publishes.config()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +31,7 @@ func TestLifecyclePoliciesArePackageOwned(t *testing.T) {
 		t.Fatalf("unexpected bounded policy: %#v", bounded)
 	}
 
-	news20m, err := LifecycleSandboxNews20M.config()
+	news20m, err := Policy20M.config()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func TestLifecyclePoliciesArePackageOwned(t *testing.T) {
 		t.Fatalf("unexpected 20-minute news policy: %#v", news20m)
 	}
 
-	if _, err := LifecyclePolicy("request-controlled").config(); err == nil {
+	if _, err := Policy("request-controlled").config(); err == nil {
 		t.Fatal("expected unknown lifecycle policy to fail")
 	}
 }
@@ -47,11 +47,11 @@ func TestLifecyclePoliciesArePackageOwned(t *testing.T) {
 func TestConfigureDefaultWithLifecycle(t *testing.T) {
 	rt := NewRuntime(nil)
 	rt.ConfigureDefaultWithLifecycle(
-		LifecycleSandboxBounded,
+		Policy30S64Publishes,
 		func(context.Context) error { return nil },
 		nil,
 	)
-	if rt.spec.Lifecycle != LifecycleSandboxBounded {
+	if rt.spec.Lifecycle != Policy30S64Publishes {
 		t.Fatalf("lifecycle = %q", rt.spec.Lifecycle)
 	}
 }
