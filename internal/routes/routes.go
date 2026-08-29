@@ -34,7 +34,7 @@ var (
 
 const (
 	apiKeyHeader               = "X-API-Key"
-	publicAPIPrefix             = "/pubsub/api/v0.0.1"
+	publicAPIPrefix            = "/pubsub/api/v0.0.1"
 	activeSubscriptionsPattern = "active_subscriptions:%s:%s"
 	subscriptionGroupsPrefix   = "subscription_groups"
 
