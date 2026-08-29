@@ -90,6 +90,14 @@ func authenticateRequest(next http.Handler) http.Handler {
 				return
 			}
 			principal.Policy = policy
+
+			// The unversioned API predates tenant scoping and executes through
+			// the service control-plane client. Do not expose it to tenants.
+			if strings.HasPrefix(r.URL.Path, "/channels") ||
+				r.URL.Path == "/bootstrap" {
+				http.Error(w, "Legacy API is application-admin only in managed mode", http.StatusForbidden)
+				return
+			}
 		}
 
 		ctxWithPrincipal := context.WithValue(r.Context(), principalContextKey{}, principal)
