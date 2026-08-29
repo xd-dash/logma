@@ -35,7 +35,7 @@ func functionMetadataKey(tenant, name string) string {
 
 func uploadTenantFunctionHandler(w http.ResponseWriter, r *http.Request) {
 	principal, ok := principalFromRequest(r)
-	if authProfileFromEnv().Name != "managed" || !ok {
+	if func() bool { p, _ := authProviderFromEnv(); return p == nil }() || !ok {
 		http.Error(w, "Tenant functions require managed auth profile", http.StatusNotFound)
 		return
 	}
@@ -163,7 +163,7 @@ func buildTenantFunctionLibrary(libraryName, functionName, source string, readOn
 
 func listTenantFunctionsHandler(w http.ResponseWriter, r *http.Request) {
 	principal, ok := principalFromRequest(r)
-	if authProfileFromEnv().Name != "managed" || !ok {
+	if func() bool { p, _ := authProviderFromEnv(); return p == nil }() || !ok {
 		http.Error(w, "Tenant functions require managed auth profile", http.StatusNotFound)
 		return
 	}
@@ -205,7 +205,7 @@ func listTenantFunctionsHandler(w http.ResponseWriter, r *http.Request) {
 
 func deleteTenantFunctionHandler(w http.ResponseWriter, r *http.Request) {
 	principal, ok := principalFromRequest(r)
-	if authProfileFromEnv().Name != "managed" || !ok {
+	if func() bool { p, _ := authProviderFromEnv(); return p == nil }() || !ok {
 		http.Error(w, "Tenant functions require managed auth profile", http.StatusNotFound)
 		return
 	}
