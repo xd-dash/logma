@@ -36,6 +36,7 @@ type RuntimeRecord struct {
 	StartedAt       time.Time                `json:"started_at"`
 	UpdatedAt       time.Time                `json:"updated_at"`
 	Subscriptions   []SubscriptionDescriptor `json:"subscriptions"`
+	Lifecycle       LifecyclePolicy           `json:"lifecycle,omitempty"`
 }
 
 func RuntimeRecordKey(namespace, instanceID, requestID string) string {
@@ -93,7 +94,7 @@ type RuntimeLease struct {
 	closeOnce sync.Once
 }
 
-func (cp ControlPlane) RegisterRuntime(ctx context.Context, invocation InvocationInfo, subscriptions []SubscriptionDescriptor) (*RuntimeLease, error) {
+func (cp ControlPlane) RegisterRuntime(ctx context.Context, invocation InvocationInfo, subscriptions []SubscriptionDescriptor, policies ...LifecyclePolicy) (*RuntimeLease, error) {
 	namespace := cp.Namespace
 	if namespace == "" {
 		namespace = invocation.Service
@@ -106,6 +107,10 @@ func (cp ControlPlane) RegisterRuntime(ctx context.Context, invocation Invocatio
 		startedAt = time.Now().UTC()
 	}
 	now := time.Now().UTC()
+	var policy LifecyclePolicy
+	if len(policies) > 0 {
+		policy = policies[0]
+	}
 	record := RuntimeRecord{
 		Namespace:       namespace,
 		InstanceID:      cp.InstanceID,
@@ -115,6 +120,7 @@ func (cp ControlPlane) RegisterRuntime(ctx context.Context, invocation Invocatio
 		StartedAt:       startedAt,
 		UpdatedAt:       now,
 		Subscriptions:   subscriptions,
+		Lifecycle:       policy,
 	}
 	record.Key = RuntimeRecordKey(record.Namespace, record.InstanceID, record.RequestID)
 	encodedSubscriptions, err := json.Marshal(record.Subscriptions)
@@ -130,6 +136,7 @@ func (cp ControlPlane) RegisterRuntime(ctx context.Context, invocation Invocatio
 		"started_at": record.StartedAt.Format(time.RFC3339Nano),
 		"updated_at": record.UpdatedAt.Format(time.RFC3339Nano),
 		"subscriptions": string(encodedSubscriptions),
+		"lifecycle": string(record.Lifecycle),
 	}
 	indexKey := runtimeIndexKey(record.Namespace)
 	pipe := cp.Client.TxPipeline()
@@ -192,6 +199,7 @@ func LoadRuntimeRecord(ctx context.Context, client *redis.Client, key string) (R
 		RequestID:       fields["request_id"],
 		InvocationKey:   fields["invocation_key"],
 		ShutdownChannel: fields["shutdown_channel"],
+		Lifecycle:       LifecyclePolicy(fields["lifecycle"]),
 	}
 	if value := fields["started_at"]; value != "" {
 		record.StartedAt, _ = time.Parse(time.RFC3339Nano, value)
