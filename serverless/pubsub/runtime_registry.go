@@ -36,7 +36,7 @@ type RuntimeRecord struct {
 	StartedAt       time.Time                `json:"started_at"`
 	UpdatedAt       time.Time                `json:"updated_at"`
 	Subscriptions   []SubscriptionDescriptor `json:"subscriptions"`
-	Lifecycle       LifecyclePolicy           `json:"lifecycle,omitempty"`
+	Lifecycle       LifecyclePolicy          `json:"lifecycle,omitempty"`
 }
 
 func RuntimeRecordKey(namespace, instanceID, requestID string) string {

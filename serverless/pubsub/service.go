@@ -27,11 +27,11 @@ func (cp ControlPlane) SubscribeAll(ctx context.Context, handlers ChannelHandler
 }
 
 type ServiceSpec struct {
-	Invocation     InvocationInfo
-	Channels       ChannelHandlers
+	Invocation    InvocationInfo
+	Channels      ChannelHandlers
 	Subscriptions []SubscriptionDescriptor
-	Lifecycle      LifecyclePolicy
-	Work           func(ctx context.Context) error
+	Lifecycle     LifecyclePolicy
+	Work          func(ctx context.Context) error
 }
 
 func (cp ControlPlane) Run(ctx context.Context, spec ServiceSpec) error {
@@ -104,7 +104,7 @@ func (sr *Runtime) ConfigureDefaultWithLifecycle(policy LifecyclePolicy, work fu
 		})
 	}
 	sr.Configure(ServiceSpec{
-		Channels:       channels,
+		Channels:      channels,
 		Subscriptions: descriptors,
 		Lifecycle:     policy,
 		Work:          work,

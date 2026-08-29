@@ -27,8 +27,11 @@ jobs:
 
       - name: Check formatting
         run: |
-          gofmt -w .
-          git diff --exit-code
+          diff="$(gofmt -d .)"
+          if [ -n "$diff" ]; then
+            printf 'gofmt diff:\n%s\n' "$diff"
+            exit 1
+          fi
 
       - name: Vet
         run: go vet ./...
