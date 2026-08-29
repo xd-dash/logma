@@ -128,15 +128,15 @@ func (cp ControlPlane) RegisterRuntime(ctx context.Context, invocation Invocatio
 		return nil, fmt.Errorf("marshal runtime subscriptions: %w", err)
 	}
 	fields := map[string]any{
-		"namespace": record.Namespace,
-		"instance_id": record.InstanceID,
-		"request_id": record.RequestID,
-		"invocation_key": record.InvocationKey,
+		"namespace":        record.Namespace,
+		"instance_id":      record.InstanceID,
+		"request_id":       record.RequestID,
+		"invocation_key":   record.InvocationKey,
 		"shutdown_channel": record.ShutdownChannel,
-		"started_at": record.StartedAt.Format(time.RFC3339Nano),
-		"updated_at": record.UpdatedAt.Format(time.RFC3339Nano),
-		"subscriptions": string(encodedSubscriptions),
-		"lifecycle": string(record.Lifecycle),
+		"started_at":       record.StartedAt.Format(time.RFC3339Nano),
+		"updated_at":       record.UpdatedAt.Format(time.RFC3339Nano),
+		"subscriptions":    string(encodedSubscriptions),
+		"lifecycle":        string(record.Lifecycle),
 	}
 	indexKey := runtimeIndexKey(record.Namespace)
 	pipe := cp.Client.TxPipeline()
