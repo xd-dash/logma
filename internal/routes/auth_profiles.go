@@ -8,10 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dash-xd/ratelimiter/auth"
+	managedprofile "github.com/dash-xd/ratelimiter/auth/profile/managed"
 	"github.com/redis/go-redis/v9"
-	logmaacl "github.com/xd-dash/logma/acl"
-	legacyprofile "github.com/xd-dash/logma/acl/profile/legacy"
-	managedprofile "github.com/xd-dash/logma/acl/profile/managed"
 )
 
 type principalContextKey struct{}
@@ -20,19 +19,33 @@ type requestPrincipal struct {
 	Username string
 	Tenant   string
 	Admin    bool
-	Policy   logmaacl.TenantPolicy
+	Policy   auth.Policy
 	Password string
 }
 
-func authProfileFromEnv() logmaacl.Profile {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("LOGMA_AUTH_PROFILE"))) {
-	case "", "legacy":
-		return legacyprofile.New()
-	case "managed", "acl", "multi-tenant":
-		return managedprofile.New(strings.TrimSpace(os.Getenv("LOGMA_ADMIN_USER")))
+func authProviderFromEnv() (auth.Provider, error) {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LOGMA_AUTH_PROVIDER"))) {
+	case "", "default", "legacy", "rediscliauth":
+		return nil, nil
+	case "managed", "ratelimiter-managed", "redis-acl":
+		return managedprofile.New(managedprofile.Config{
+			AdminUser:      strings.TrimSpace(os.Getenv("LOGMA_ADMIN_USER")),
+			UsernamePrefix: "logma-tenant-",
+			KeyPrefix:      "logma:tenant:",
+			ChannelPrefix:  "tenant:",
+			FunctionPrefix: "logma_",
+		})
 	default:
-		return logmaacl.Profile{Name: "invalid"}
+		return nil, &invalidAuthProviderError{name: os.Getenv("LOGMA_AUTH_PROVIDER")}
 	}
+}
+
+type invalidAuthProviderError struct {
+	name string
+}
+
+func (e *invalidAuthProviderError) Error() string {
+	return "invalid LOGMA_AUTH_PROVIDER " + e.name
 }
 
 func principalFromRequest(r *http.Request) (requestPrincipal, bool) {
@@ -42,17 +55,17 @@ func principalFromRequest(r *http.Request) (requestPrincipal, bool) {
 }
 
 func authenticateRequest(next http.Handler) http.Handler {
-	profile := authProfileFromEnv()
-	if profile.Name == "legacy" {
+	provider, err := authProviderFromEnv()
+	if err != nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		})
+	}
+	if provider == nil {
 		return authenticateAPIKey(next)
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if profile.Name != "managed" {
-			http.Error(w, "Invalid LOGMA_AUTH_PROFILE", http.StatusInternalServerError)
-			return
-		}
-
 		username, password, ok := r.BasicAuth()
 		username = strings.TrimSpace(username)
 		if !ok || username == "" || password == "" {
@@ -63,10 +76,10 @@ func authenticateRequest(next http.Handler) http.Handler {
 
 		authClient := redis.NewClient(redisOptionsForCredentials(username, password))
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-		err := authClient.Ping(ctx).Err()
+		pingErr := authClient.Ping(ctx).Err()
 		cancel()
 		_ = authClient.Close()
-		if err != nil {
+		if pingErr != nil {
 			http.Error(w, "Invalid Redis ACL credentials", http.StatusUnauthorized)
 			return
 		}
@@ -74,7 +87,7 @@ func authenticateRequest(next http.Handler) http.Handler {
 		principal := requestPrincipal{
 			Username: username,
 			Password: password,
-			Admin:    username == profile.AdminUser,
+			Admin:    username == provider.AdminUser(),
 		}
 
 		if !principal.Admin {
@@ -84,18 +97,16 @@ func authenticateRequest(next http.Handler) http.Handler {
 				return
 			}
 			principal.Tenant = record.Tenant
-			policy, err := logmaacl.PolicyByName(record.Profile)
+			policy, err := provider.Policy(record.Profile)
 			if err != nil {
 				http.Error(w, "Invalid stored ACL profile", http.StatusInternalServerError)
 				return
 			}
 			principal.Policy = policy
 
-			// The unversioned API predates tenant scoping and executes through
-			// the service control-plane client. Do not expose it to tenants.
 			if strings.HasPrefix(r.URL.Path, "/channels") ||
 				r.URL.Path == "/bootstrap" {
-				http.Error(w, "Legacy API is application-admin only in managed mode", http.StatusForbidden)
+				http.Error(w, "Legacy API is application-admin only with an auth provider", http.StatusForbidden)
 				return
 			}
 		}
@@ -115,9 +126,9 @@ func redisOptionsForCredentials(username, password string) *redis.Options {
 
 func requireApplicationAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		profile := authProfileFromEnv()
-		if profile.Name != "managed" {
-			http.Error(w, "User management requires managed auth profile", http.StatusNotFound)
+		provider, err := authProviderFromEnv()
+		if err != nil || provider == nil {
+			http.Error(w, "User management requires an auth provider", http.StatusNotFound)
 			return
 		}
 		principal, ok := principalFromRequest(r)
@@ -130,13 +141,20 @@ func requireApplicationAdmin(next http.Handler) http.Handler {
 }
 
 func authProfileHandler(w http.ResponseWriter, r *http.Request) {
-	profile := authProfileFromEnv()
-	response := map[string]any{
-		"profile": profile.Name,
-		"managed": profile.Managed,
+	provider, err := authProviderFromEnv()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
-	if profile.Managed {
-		response["adminUser"] = profile.AdminUser
+
+	response := map[string]any{
+		"provider": "default",
+		"managed":  false,
+	}
+	if provider != nil {
+		response["provider"] = provider.Name()
+		response["managed"] = true
+		response["adminUser"] = provider.AdminUser()
 		response["tenantProfiles"] = []string{
 			"tenant",
 			"tenant-functions",
@@ -144,6 +162,7 @@ func authProfileHandler(w http.ResponseWriter, r *http.Request) {
 			"subscriber",
 		}
 	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(response)
 }
