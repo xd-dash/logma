@@ -14,7 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/redis/go-redis/v9"
-	logmaacl "github.com/xd-dash/logma/acl"
+	"github.com/dash-xd/ratelimiter/auth"
 )
 
 const aclUserMetadataPrefix = "logma:acl:user:"
@@ -79,12 +79,17 @@ func createACLUserHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	request.Tenant = strings.TrimSpace(request.Tenant)
-	if err := logmaacl.ValidateIdentifier(request.Tenant); err != nil {
+	if err := auth.ValidateIdentifier(request.Tenant); err != nil {
 		http.Error(w, "Invalid tenant: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	policy, err := logmaacl.PolicyByName(request.Profile)
+	provider, providerErr := authProviderFromEnv()
+	if providerErr != nil || provider == nil {
+		http.Error(w, "Auth provider unavailable", http.StatusInternalServerError)
+		return
+	}
+	policy, err := provider.Policy(request.Profile)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -92,13 +97,18 @@ func createACLUserHandler(w http.ResponseWriter, r *http.Request) {
 
 	username := strings.TrimSpace(request.Username)
 	if username == "" {
-		username = logmaacl.TenantUsername(request.Tenant)
+		scope, scopeErr := provider.Scope(request.Tenant, "")
+		if scopeErr != nil {
+			http.Error(w, scopeErr.Error(), http.StatusBadRequest)
+			return
+		}
+		username = scope.Username
 	}
-	if err := logmaacl.ValidateIdentifier(username); err != nil {
+	if err := auth.ValidateIdentifier(username); err != nil {
 		http.Error(w, "Invalid username: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if username == authProfileFromEnv().AdminUser {
+	if username == provider.AdminUser() {
 		http.Error(w, "Cannot replace the application admin", http.StatusConflict)
 		return
 	}
@@ -120,7 +130,9 @@ func createACLUserHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rules, err := logmaacl.RulesForTenant(request.Tenant, password, policy, true)
+	rules, err := provider.Rules(auth.UserSpec{
+		Tenant: request.Tenant, Username: username, Password: password, Policy: policy, Reset: true,
+	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -168,11 +180,16 @@ func replaceACLUserHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	request.Tenant = strings.TrimSpace(request.Tenant)
-	if err := logmaacl.ValidateIdentifier(request.Tenant); err != nil {
+	if err := auth.ValidateIdentifier(request.Tenant); err != nil {
 		http.Error(w, "Invalid tenant: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	policy, err := logmaacl.PolicyByName(request.Profile)
+	provider, providerErr := authProviderFromEnv()
+	if providerErr != nil || provider == nil {
+		http.Error(w, "Auth provider unavailable", http.StatusInternalServerError)
+		return
+	}
+	policy, err := provider.Policy(request.Profile)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -187,7 +204,9 @@ func replaceACLUserHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	rules, err := logmaacl.RulesForTenant(request.Tenant, password, policy, true)
+	rules, err := provider.Rules(auth.UserSpec{
+		Tenant: request.Tenant, Username: username, Password: password, Policy: policy, Reset: true,
+	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
