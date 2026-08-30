@@ -64,7 +64,6 @@ func NewRegistration(req RegisterRequest, now time.Time) (Registration, error) {
 		if err != nil {
 			return Registration{}, err
 		}
-		var err error
 		code, err = ratelimiter.EncodePolicy(policy)
 		if err != nil {
 			return Registration{}, err
