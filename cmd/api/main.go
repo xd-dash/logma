@@ -11,13 +11,22 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/xd-dash/logma/internal/routes"
 )
 
 const shutdownTimeout = 10 * time.Second
 
 func main() {
-	router := routes.NewRouter()
+	lifecycleRouter, err := routes.NewLifecycleRouter()
+	if err != nil {
+		panic(fmt.Errorf("initialize lifecycle API: %w", err))
+	}
+
+	router := chi.NewRouter()
+	router.Mount("/lifecycle", lifecycleRouter)
+	router.Mount("/", routes.NewRouter())
+
 	port := getPortFromArgs()
 	addr := fmt.Sprintf(":%d", port)
 
