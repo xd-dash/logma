@@ -45,6 +45,15 @@ func main() {
 	defer client.Close()
 	observer := axiomcallback.FromEnv()
 
+	pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
+	if err := client.Ping(pingCtx).Err(); err != nil {
+		pingCancel()
+		fmt.Fprintf(os.Stderr, "redis ping failed: %v\n", err)
+		os.Exit(1)
+	}
+	pingCancel()
+	fmt.Println("redis_ping=ok")
+
 	subs := make([]*pubsub.Subscriber, 0, len(channels))
 	for _, channel := range channels {
 		subs = append(subs, pubsub.SubscribeObserved(ctx, client, channel, observer))
@@ -56,7 +65,11 @@ func main() {
 		select {
 		case <-sub.Ready():
 		case <-readyCtx.Done():
-			fmt.Fprintf(os.Stderr, "subscriber %d did not become ready: %v\n", i, readyCtx.Err())
+			fmt.Fprintf(os.Stderr, "subscriber %d did not become ready: %v", i, readyCtx.Err())
+			if err := sub.LastError(); err != nil {
+				fmt.Fprintf(os.Stderr, "; redis error: %v", err)
+			}
+			fmt.Fprintln(os.Stderr)
 			os.Exit(1)
 		}
 	}
