@@ -6,25 +6,37 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/xd-dash/logma/serverless/keyspace"
 	"github.com/xd-dash/logma/serverless/pubsub/channels"
 )
 
 type ControlPlane struct {
 	Client     *redis.Client
 	InstanceID string
+	Scope      keyspace.Scope
 	channels.Defaults
 }
 
 func NewControlPlane(client *redis.Client) ControlPlane {
-	return ControlPlane{Client: client, InstanceID: InstanceID(), Defaults: channels.Discover()}
+	instanceID := InstanceID()
+	return ControlPlane{
+		Client: client,
+		InstanceID: instanceID,
+		Scope: keyspace.FromEnv(instanceID),
+		Defaults: channels.Discover(),
+	}
 }
 
+// InstanceChannel applies the Fatline security scope as the left-most Redis
+// segment so one ACL pattern can constrain both keys and Pub/Sub channels.
 func (cp ControlPlane) InstanceChannel(baseChannel string) string {
-	return baseChannel + ":" + cp.InstanceID
+	return cp.Scope.Prefix(baseChannel)
 }
 
+// GlobalChannel is intentionally outside an instance security scope. Code that
+// consumes global relay traffic therefore requires an explicit &global:* ACL.
 func (cp ControlPlane) GlobalChannel(baseChannel string) string {
-	return baseChannel + ":global"
+	return "global:" + baseChannel
 }
 
 func (cp ControlPlane) Relay(ctx context.Context, baseChannel string) *Subscriber {
