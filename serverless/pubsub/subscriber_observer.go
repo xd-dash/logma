@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // ObserveSubscriberMessage mirrors one message as observed by a Redis Pub/Sub
@@ -35,18 +37,8 @@ func ObserveSubscriberMessage(observer Observer, ctx context.Context, channel, p
 // SubscribeObserved is the subscriber-side counterpart to Runtime.Publish
 // observation. Redis subscription readiness and reconnect behavior remain owned
 // by Subscribe; observation is best-effort and cannot reject or delay delivery.
-func SubscribeObserved(ctx context.Context, client RedisSubscriber, channel string, observer Observer) *Subscriber {
-	return Subscribe(ctx, client.Client(), channel, func(payload string) {
+func SubscribeObserved(ctx context.Context, client *redis.Client, channel string, observer Observer) *Subscriber {
+	return Subscribe(ctx, client, channel, func(payload string) {
 		ObserveSubscriberMessage(observer, ctx, channel, payload)
 	})
 }
-
-// RedisSubscriber is a narrow adapter used by SubscribeObserved so callers can
-// pass a normal Logma client without widening the subscriber callback contract.
-type RedisSubscriber interface {
-	Client() RedisClient
-}
-
-// RedisClient is intentionally declared in subscriber_adapter.go by the concrete
-// adapter; this declaration is kept here only to document the narrow boundary.
-type RedisClient interface{}
