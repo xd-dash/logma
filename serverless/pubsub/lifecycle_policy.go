@@ -139,6 +139,8 @@ type lifecycleGuard struct {
 	shutdownChannel string
 	cfg             lifecyclePolicyConfig
 	shutdownOnce    sync.Once
+	observer        Observer
+	baseEvent       ObservabilityEvent
 }
 
 func newLifecycleGuard(
@@ -148,6 +150,7 @@ func newLifecycleGuard(
 	cp ControlPlane,
 	invocation InvocationInfo,
 	policy Policy,
+	observer Observer,
 ) (*lifecycleGuard, error) {
 	cfg, err := policy.config()
 	if err != nil {
@@ -173,6 +176,15 @@ func newLifecycleGuard(
 		totalBucket:     baseBucket + ":publishes",
 		shutdownChannel: cp.InstanceChannel(cp.ShutdownChannel()),
 		cfg:             cfg,
+		observer:        observer,
+		baseEvent: ObservabilityEvent{
+			Kind:       "fatline",
+			Namespace:  namespace,
+			InstanceID: cp.InstanceID,
+			RequestID:  invocation.RequestID,
+			Policy:     string(policy),
+			PolicyCode: uint64(cfg.code),
+		},
 	}
 
 	store, err := ratelimiter.NewRedisStore(client, ratelimiter.RedisConfig{
@@ -229,10 +241,24 @@ func newLifecycleGuard(
 			return nil, fmt.Errorf("arm lifecycle timer: %w", err)
 		}
 
+		guard.emit(ctx, "lifecycle", "armed", "")
 		go guard.tickTimer(ctx)
+	} else {
+		guard.emit(ctx, "lifecycle", "active", "")
 	}
 
 	return guard, nil
+}
+
+func (g *lifecycleGuard) emit(ctx context.Context, phase, status, reason string) {
+	if g == nil {
+		return
+	}
+	event := g.baseEvent
+	event.Phase = phase
+	event.Status = status
+	event.Reason = reason
+	observe(g.observer, ctx, event)
 }
 
 func (g *lifecycleGuard) admitPublish(ctx context.Context) (bool, error) {
@@ -247,11 +273,16 @@ func (g *lifecycleGuard) admitPublish(ctx context.Context) (bool, error) {
 		Window:      lifecycleTotalWindow,
 	})
 	if err != nil {
+		g.emit(ctx, "lifecycle_publish_limit", "error", "policy_check_failed")
 		return false, fmt.Errorf("check lifecycle publish limit: %w", err)
 	}
 	if !decision.Allowed {
+		g.emit(ctx, "lifecycle_publish_limit", "exhausted", "total_publishes")
 		_ = g.shutdown("lifecycle:total_publishes")
 		return false, ErrLifecyclePublishLimit
+	}
+	if decision.Remaining == 0 {
+		g.emit(ctx, "lifecycle_publish_limit", "exhausted", "total_publishes")
 	}
 	return decision.Remaining == 0, nil
 }
@@ -272,6 +303,7 @@ func (g *lifecycleGuard) shutdown(reason string) error {
 
 	var shutdownErr error
 	g.shutdownOnce.Do(func() {
+		g.emit(context.Background(), "lifecycle_shutdown", "signaling", reason)
 		payload, err := json.Marshal(ShutdownRequest{Reason: reason})
 		if err != nil {
 			shutdownErr = err
@@ -281,6 +313,11 @@ func (g *lifecycleGuard) shutdown(reason string) error {
 		publishCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_, shutdownErr = g.client.Publish(publishCtx, g.shutdownChannel, payload).Result()
+		if shutdownErr != nil {
+			g.emit(publishCtx, "lifecycle_shutdown", "publish_failed", reason)
+		} else {
+			g.emit(publishCtx, "lifecycle_shutdown", "signaled", reason)
+		}
 		g.cancel()
 	})
 	return shutdownErr
@@ -302,11 +339,13 @@ func (g *lifecycleGuard) tickTimer(ctx context.Context) {
 			result, err := g.timerLimiter.Tick(ctx, g.timerBucket)
 			if err != nil {
 				if ctx.Err() == nil {
+					g.emit(ctx, "lifecycle_timer", "tick_failed", "timer_tick_failed")
 					log.Printf("pubsub: lifecycle timer tick: %v", err)
 				}
 				continue
 			}
 			if result.PublishFailures > 0 {
+				g.emit(ctx, "lifecycle_timer", "publish_failed", "shutdown_publish_failed")
 				log.Printf("pubsub: lifecycle timer tick publish failures=%d pending=%d", result.PublishFailures, result.Pending)
 			}
 		}
@@ -321,6 +360,9 @@ func (g *lifecycleGuard) close() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if _, err := g.timerLimiter.CancelTimer(ctx, g.timerBucket); err != nil {
+		g.emit(ctx, "lifecycle", "cancel_failed", "timer_cancel_failed")
 		log.Printf("pubsub: cancel lifecycle timer: %v", err)
+		return
 	}
+	g.emit(ctx, "lifecycle", "closed", "")
 }
