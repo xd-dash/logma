@@ -141,7 +141,7 @@ func (sr *Runtime) Publish(channel string, event any) error {
 	if err != nil {
 		observed := sr.observabilityBase("publish_admission", "denied")
 		observed.Channel = channel
-		observed.Reason = err.Error()
+		observed.Reason = "lifecycle_policy_denied"
 		observe(sr.spec.Observer, sr.Context(), observed)
 		return err
 	}
@@ -158,7 +158,7 @@ func (sr *Runtime) Publish(channel string, event any) error {
 	observed.Payload = append(json.RawMessage(nil), data...)
 	if publishErr != nil {
 		observed.Status = "failed"
-		observed.Reason = publishErr.Error()
+		observed.Reason = "redis_publish_failed"
 	}
 	observe(sr.spec.Observer, sr.Context(), observed)
 	if publishErr != nil {
@@ -218,7 +218,7 @@ func (sr *Runtime) Start(ctx context.Context) {
 
 		if err := sr.ControlPlane.Run(sr.Context(), spec); err != nil {
 			failed := sr.observabilityBase("runtime", "failed")
-			failed.Reason = err.Error()
+			failed.Reason = "runtime_failed"
 			observe(spec.Observer, sr.Context(), failed)
 			log.Printf("pubsub: %v", err)
 			return
