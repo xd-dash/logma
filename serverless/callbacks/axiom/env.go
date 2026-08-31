@@ -25,14 +25,16 @@ func FromEnv() *Observer {
 	mode := PublishMode(strings.TrimSpace(os.Getenv("LOGMA_AXIOM_PUBLISH_MODE")))
 	static := map[string]any{}
 	for env, field := range map[string]string{
-		"FATLINE_ID":           "fatline_id",
-		"FATLINE_SESSION_ID":   "fatline_session_id",
-		"HURAM_DEPLOYMENT_ID":  "deployment_id",
-		"HURAM_COMPOSITION_ID": "composition_id",
-		"HURAM_RUN_ID":         "huram_run_id",
-		"RUNTIME_MODE":         "mode",
-		"CLOUD_REGION":         "region",
-		"SOURCE_SHA":           "source_sha",
+		"FATLINE_ID":                 "fatline_id",
+		"FATLINE_SESSION_ID":         "fatline_session_id",
+		"FATLINE_SCOPE":              "fatline_scope",
+		"HURAM_DEPLOYMENT_ID":        "deployment_id",
+		"HURAM_COMPOSITION_ID":       "composition_id",
+		"HURAM_RUN_ID":               "huram_run_id",
+		"RUNTIME_MODE":               "mode",
+		"CLOUD_REGION":               "region",
+		"SOURCE_SHA":                 "source_sha",
+		"LOGMA_AXIOM_OBSERVER_PATH":  "observer_path",
 	} {
 		if value := strings.TrimSpace(os.Getenv(env)); value != "" {
 			static[field] = value
