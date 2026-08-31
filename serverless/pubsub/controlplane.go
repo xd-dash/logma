@@ -3,6 +3,8 @@ package pubsub
 import (
 	"context"
 	"log"
+	"os"
+	"strings"
 
 	"github.com/redis/go-redis/v9"
 
@@ -11,19 +13,21 @@ import (
 )
 
 type ControlPlane struct {
-	Client     *redis.Client
-	InstanceID string
-	Scope      keyspace.Scope
+	Client             *redis.Client
+	InstanceID         string
+	Scope              keyspace.Scope
+	GlobalRelayEnabled bool
 	channels.Defaults
 }
 
 func NewControlPlane(client *redis.Client) ControlPlane {
 	instanceID := InstanceID()
 	return ControlPlane{
-		Client: client,
-		InstanceID: instanceID,
-		Scope: keyspace.FromEnv(instanceID),
-		Defaults: channels.Discover(),
+		Client:             client,
+		InstanceID:         instanceID,
+		Scope:              keyspace.FromEnv(instanceID),
+		GlobalRelayEnabled: strings.EqualFold(strings.TrimSpace(os.Getenv("LOGMA_GLOBAL_RELAY_ENABLED")), "true"),
+		Defaults:           channels.Discover(),
 	}
 }
 
@@ -40,6 +44,9 @@ func (cp ControlPlane) GlobalChannel(baseChannel string) string {
 }
 
 func (cp ControlPlane) Relay(ctx context.Context, baseChannel string) *Subscriber {
+	if !cp.GlobalRelayEnabled {
+		return nil
+	}
 	instanceChannel := cp.InstanceChannel(baseChannel)
 	globalChannel := cp.GlobalChannel(baseChannel)
 	return Subscribe(ctx, cp.Client, globalChannel, func(payload string) {
