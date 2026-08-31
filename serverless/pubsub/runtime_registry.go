@@ -72,6 +72,29 @@ func ListRuntimeRecords(ctx context.Context, client *redis.Client, namespace str
 func ListRuntimeRecordsScoped(ctx context.Context, client *redis.Client, scope keyspace.Scope, namespace string) ([]RuntimeRecord,error) { return listRuntimeRecordsAt(ctx,client,runtimeIndexKeyScoped(scope,namespace)) }
 func listRuntimeRecordsAt(ctx context.Context, client *redis.Client, indexKey string) ([]RuntimeRecord,error) { keys,err:=client.SMembers(ctx,indexKey).Result(); if err!=nil{return nil,err}; records:=make([]RuntimeRecord,0,len(keys)); for _,key:=range keys{record,err:=LoadRuntimeRecord(ctx,client,key); if errors.Is(err,redis.Nil){_=client.SRem(ctx,indexKey,key).Err();continue}; if err!=nil{return nil,err}; records=append(records,record)}; return records,nil }
 
-func SaveRuntimeSubscriptionGroup(ctx context.Context, client *redis.Client, runtimeKey, groupID string) error { record,err:=LoadRuntimeRecord(ctx,client,runtimeKey);if err!=nil{return err};if strings.TrimSpace(groupID)==""{return errors.New("group id is empty")};pipe:=client.TxPipeline();for i,subscription:=range record.Subscriptions{id:=subscription.ID;if id==""{id=fmt.Sprintf("runtime-%d",i+1)};key:=fmt.Sprintf("subscription_groups:%s:%s:%s",groupID,id,subscription.Channel);pipe.Set(ctx,key,subscription.Callback,0)};_,err=pipe.Exec(ctx);return err }
+// SaveRuntimeSubscriptionGroup is the legacy unscoped compatibility writer.
+// New Fatline code should use SaveRuntimeSubscriptionGroupScoped.
+func SaveRuntimeSubscriptionGroup(ctx context.Context, client *redis.Client, runtimeKey, groupID string) error {
+	return saveRuntimeSubscriptionGroup(ctx, client, "", runtimeKey, groupID)
+}
+
+// SaveRuntimeSubscriptionGroupScoped stores the snapshot beneath
+// <scope>:logma:subscription-group:... so the write remains inside the worker's
+// Logma key capability.
+func SaveRuntimeSubscriptionGroupScoped(ctx context.Context, client *redis.Client, scope keyspace.Scope, runtimeKey, groupID string) error {
+	if _, err := keyspace.ParseScope(string(scope)); err != nil { return err }
+	return saveRuntimeSubscriptionGroup(ctx, client, scope, runtimeKey, groupID)
+}
+
+func saveRuntimeSubscriptionGroup(ctx context.Context, client *redis.Client, scope keyspace.Scope, runtimeKey, groupID string) error {
+	record,err:=LoadRuntimeRecord(ctx,client,runtimeKey);if err!=nil{return err};if strings.TrimSpace(groupID)==""{return errors.New("group id is empty")};pipe:=client.TxPipeline()
+	for i,subscription:=range record.Subscriptions{
+		id:=subscription.ID;if id==""{id=fmt.Sprintf("runtime-%d",i+1)}
+		var key string
+		if scope == "" { key=fmt.Sprintf("subscription_groups:%s:%s:%s",groupID,id,subscription.Channel) } else { key=scope.Name("logma","subscription-group",groupID,id,subscription.Channel) }
+		pipe.Set(ctx,key,subscription.Callback,0)
+	}
+	_,err=pipe.Exec(ctx);return err
+}
 
 func ShutdownRuntime(ctx context.Context, client *redis.Client, record RuntimeRecord, reason string) error { if record.ShutdownChannel==""{return errors.New("runtime has no shutdown channel")};payload,err:=json.Marshal(ShutdownRequest{Reason:reason});if err!=nil{return err};return client.Publish(ctx,record.ShutdownChannel,payload).Err() }
