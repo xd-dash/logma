@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -36,17 +37,13 @@ func main() {
 		fmt.Fprintln(os.Stderr, "LOGMA_SUBSCRIBE_CHANNELS must contain at least one exact channel")
 		os.Exit(2)
 	}
+	required, _ := strconv.ParseBool(os.Getenv("LOGMA_AXIOM_REQUIRED"))
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	client := pubsub.NewClientFromEnv()
 	defer client.Close()
 	observer := axiomcallback.FromEnv()
-	defer func() {
-		flushCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = observer.Close(flushCtx)
-	}()
 
 	subs := make([]*pubsub.Subscriber, 0, len(channels))
 	for _, channel := range channels {
@@ -70,6 +67,20 @@ func main() {
 		select {
 		case <-sub.Stopped():
 		case <-time.After(2 * time.Second):
+		}
+	}
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	err := observer.Close(flushCtx)
+	flushCancel()
+	fmt.Printf("axiom_sent=%d axiom_failed=%d axiom_dropped=%d\n", observer.Sent(), observer.Failed(), observer.Dropped())
+	if required {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "required Axiom flush failed: %v\n", err)
+			os.Exit(1)
+		}
+		if observer.Sent() == 0 || observer.Failed() != 0 || observer.Dropped() != 0 {
+			fmt.Fprintln(os.Stderr, "required Axiom subscriber delivery was not lossless")
+			os.Exit(1)
 		}
 	}
 }
