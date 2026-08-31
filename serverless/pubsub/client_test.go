@@ -2,12 +2,15 @@ package pubsub
 
 import (
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
 func TestNewClientFromEnvUnixSocket(t *testing.T) {
 	t.Setenv("REDIS_URI", "127.0.0.1:6379")
 	t.Setenv("REDIS_SOCKET", "/run/redis/redis.sock")
+	t.Setenv("REDISCLI_AUTH_FILE", "")
 	t.Setenv("REDISCLI_AUTH", "secret")
 
 	client := NewClientFromEnv()
@@ -26,6 +29,7 @@ func TestNewClientFromEnvUnixSocket(t *testing.T) {
 func TestNewClientFromRequestUnixSocketHeader(t *testing.T) {
 	t.Setenv("REDIS_URI", "")
 	t.Setenv("REDIS_SOCKET", "")
+	t.Setenv("REDISCLI_AUTH_FILE", "")
 	t.Setenv("REDISCLI_AUTH", "")
 
 	req := httptest.NewRequest("GET", "http://example.test", nil)
@@ -43,5 +47,28 @@ func TestNewClientFromRequestUnixSocketHeader(t *testing.T) {
 	}
 	if opt.Password != "secret" {
 		t.Fatalf("password not preserved")
+	}
+}
+
+func TestRedisAuthFromEnvPrefersFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "redis-auth")
+	if err := os.WriteFile(path, []byte("from-file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REDISCLI_AUTH_FILE", path)
+	t.Setenv("REDISCLI_AUTH", "from-env")
+
+	if got := redisAuthFromEnv(); got != "from-file" {
+		t.Fatalf("redisAuthFromEnv() = %q, want file-backed credential", got)
+	}
+}
+
+func TestRedisAuthFromEnvFallsBackToValue(t *testing.T) {
+	t.Setenv("REDISCLI_AUTH_FILE", "")
+	t.Setenv("REDISCLI_AUTH", "from-env")
+
+	if got := redisAuthFromEnv(); got != "from-env" {
+		t.Fatalf("redisAuthFromEnv() = %q, want env fallback", got)
 	}
 }
