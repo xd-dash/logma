@@ -31,6 +31,7 @@ type ServiceSpec struct {
 	Channels      ChannelHandlers
 	Subscriptions []SubscriptionDescriptor
 	Lifecycle     Policy
+	Observer      Observer
 	Work          func(ctx context.Context) error
 }
 
@@ -82,11 +83,18 @@ func (sr *Runtime) RecordInvocation(r *http.Request, requestID string) {
 
 func (sr *Runtime) Configure(spec ServiceSpec) { sr.spec = spec }
 
+// SetObserver installs optional best-effort runtime observability. It is disabled
+// by default and does not change publication or lifecycle authority.
+func (sr *Runtime) SetObserver(observer Observer) {
+	sr.spec.Observer = observer
+}
+
 func (sr *Runtime) ConfigureDefault(work func(ctx context.Context) error, extraChannels ChannelHandlers) {
 	sr.ConfigureDefaultWithLifecycle(PolicyNone, work, extraChannels)
 }
 
 func (sr *Runtime) ConfigureDefaultWithLifecycle(policy Policy, work func(ctx context.Context) error, extraChannels ChannelHandlers) {
+	observer := sr.spec.Observer
 	channels := make(ChannelHandlers, len(extraChannels)+1)
 	shutdownChannel := sr.ShutdownChannel()
 	channels[shutdownChannel] = sr.DefaultShutdownHandler()
@@ -107,13 +115,34 @@ func (sr *Runtime) ConfigureDefaultWithLifecycle(policy Policy, work func(ctx co
 		Channels:      channels,
 		Subscriptions: descriptors,
 		Lifecycle:     policy,
+		Observer:      observer,
 		Work:          work,
 	})
+}
+
+func (sr *Runtime) observabilityBase(phase, status string) ObservabilityEvent {
+	namespace := sr.Namespace
+	if namespace == "" {
+		namespace = sr.invocation.Service
+	}
+	return ObservabilityEvent{
+		Kind:       "fatline",
+		Phase:      phase,
+		Status:     status,
+		Namespace:  namespace,
+		InstanceID: sr.InstanceID,
+		RequestID:  sr.invocation.RequestID,
+		Policy:     string(sr.spec.Lifecycle),
+	}
 }
 
 func (sr *Runtime) Publish(channel string, event any) error {
 	exhausted, err := sr.lifecycle.admitPublish(sr.Context())
 	if err != nil {
+		observed := sr.observabilityBase("publish_admission", "denied")
+		observed.Channel = channel
+		observed.Reason = err.Error()
+		observe(sr.spec.Observer, sr.Context(), observed)
 		return err
 	}
 
@@ -124,6 +153,14 @@ func (sr *Runtime) Publish(channel string, event any) error {
 
 	publishErr := sr.Client.Publish(sr.Context(), channel, data).Err()
 	sr.lifecycle.afterPublish(exhausted)
+	observed := sr.observabilityBase("publish", "published")
+	observed.Channel = channel
+	observed.Payload = append(json.RawMessage(nil), data...)
+	if publishErr != nil {
+		observed.Status = "failed"
+		observed.Reason = publishErr.Error()
+	}
+	observe(sr.spec.Observer, sr.Context(), observed)
 	if publishErr != nil {
 		return fmt.Errorf("publish to %s: %w", channel, publishErr)
 	}
@@ -137,6 +174,9 @@ func (sr *Runtime) DefaultShutdownHandler() func(payload string) {
 	}
 	return func(payload string) {
 		request := ParseShutdownRequest(payload)
+		observed := sr.observabilityBase("shutdown_signal", "received")
+		observed.Reason = request.Reason
+		observe(sr.spec.Observer, sr.Context(), observed)
 		log.Printf("%s: shutting down: reason=%q", label, request.Reason)
 		sr.Cancel()
 	}
@@ -152,6 +192,9 @@ func (sr *Runtime) Start(ctx context.Context) {
 			return
 		}
 
+		started := sr.observabilityBase("runtime", "starting")
+		observe(spec.Observer, sr.Context(), started)
+
 		spec.Work = func(runCtx context.Context) error {
 			guard, err := newLifecycleGuard(
 				runCtx,
@@ -160,6 +203,7 @@ func (sr *Runtime) Start(ctx context.Context) {
 				sr.ControlPlane,
 				spec.Invocation,
 				spec.Lifecycle,
+				spec.Observer,
 			)
 			if err != nil {
 				return err
@@ -173,7 +217,12 @@ func (sr *Runtime) Start(ctx context.Context) {
 		}
 
 		if err := sr.ControlPlane.Run(sr.Context(), spec); err != nil {
+			failed := sr.observabilityBase("runtime", "failed")
+			failed.Reason = err.Error()
+			observe(spec.Observer, sr.Context(), failed)
 			log.Printf("pubsub: %v", err)
+			return
 		}
+		observe(spec.Observer, sr.Context(), sr.observabilityBase("runtime", "stopped"))
 	})
 }
