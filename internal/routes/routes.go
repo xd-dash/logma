@@ -2,6 +2,8 @@ package routes
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,6 +33,7 @@ var (
 
 const (
 	apiKeyHeader               = "X-API-Key"
+	publicAPIPrefix            = "/pubsub/api/v0.0.1"
 	activeSubscriptionsPattern = "active_subscriptions:%s:%s"
 	subscriptionGroupsPrefix   = "subscription_groups"
 
@@ -46,9 +49,11 @@ var (
 )
 
 type SubscriptionListener struct {
-	Channel     string
-	CallbackURL string
-	Callbacks   []func(url string, message PublishRequest)
+	Channel        string
+	Callbacks      callbackConfig
+	Tenant         string
+	RedisClient    *redis.Client
+	OwnRedisClient bool
 }
 
 type PublishRequest struct {
@@ -61,16 +66,27 @@ type PublishRequest struct {
 }
 
 type subscriptionInfo struct {
-	ID          string
-	Key         string
-	Channel     string
-	CallbackURL string
+	ID        string
+	Key       string
+	Channel   string
+	Callbacks callbackConfig
 }
 
 type subscribeResponse struct {
-	SubscriptionID string `json:"subscriptionID"`
-	Channel        string `json:"channel"`
-	CallbackURL    string `json:"callbackURL"`
+	SubscriptionID string           `json:"subscriptionID"`
+	Channel        string           `json:"channel"`
+	Callbacks      []callbackScheme `json:"callbacks"`
+}
+
+type subscriptionGroupMember struct {
+	SubscriptionID string           `json:"subscriptionID"`
+	Channel        string           `json:"channel"`
+	Callbacks      []callbackScheme `json:"callbacks"`
+}
+
+type subscriptionGroupResponse struct {
+	GroupID string                    `json:"groupID"`
+	Members []subscriptionGroupMember `json:"members"`
 }
 
 type callbackJob struct {
@@ -344,12 +360,38 @@ func startSubscription(
 	channelName string,
 	callbackURL string,
 ) (*subscriptionInfo, error) {
+	return startSubscriptionWithCallbacks(
+		channelName,
+		singleHTTPCallbackConfig(callbackURL),
+	)
+}
+
+func startSubscriptionWithCallbacks(
+	channelName string,
+	callbacks callbackConfig,
+) (*subscriptionInfo, error) {
+	return startSubscriptionForPrincipal(
+		channelName,
+		callbacks,
+		requestPrincipal{},
+	)
+}
+
+func startSubscriptionForPrincipal(
+	channelName string,
+	callbacks callbackConfig,
+	principal requestPrincipal,
+) (*subscriptionInfo, error) {
 	if channelName == "" {
 		return nil, errors.New("channel name is empty")
 	}
 
-	if callbackURL == "" {
-		return nil, errors.New("callback URL is empty")
+	callbacks, err := normalizeCallbackConfig(callbacks)
+	if err != nil {
+		return nil, err
+	}
+	if callbackConfigEmpty(callbacks) {
+		return nil, errors.New("callback configuration is empty")
 	}
 
 	subCtx, cancel := context.WithCancel(rootCtx)
@@ -359,7 +401,26 @@ func startSubscription(
 		return nil, errSubscriptionManagerStopped
 	}
 
-	pubsub := client.Subscribe(
+	subscriptionClient := client
+	ownSubscriptionClient := false
+	if principal.Tenant != "" {
+		subscriptionClient = redis.NewClient(
+			redisOptionsForCredentials(
+				principal.Username,
+				principal.Password,
+			),
+		)
+		ownSubscriptionClient = true
+	}
+
+	clientHandedOff := false
+	defer func() {
+		if ownSubscriptionClient && !clientHandedOff {
+			_ = subscriptionClient.Close()
+		}
+	}()
+
+	pubsub := subscriptionClient.Subscribe(
 		subCtx,
 		channelName,
 	)
@@ -378,10 +439,21 @@ func startSubscription(
 	subscriptionKey := generateTempChannelID(channelName)
 	subscriptionID := extractSubscriptionID(subscriptionKey)
 
+	storedCallbacks, err := encodeStoredCallbackConfig(callbacks)
+	if err != nil {
+		cancel()
+		_ = pubsub.Close()
+		return nil, fmt.Errorf(
+			"encode callback configuration for %q: %w",
+			channelName,
+			err,
+		)
+	}
+
 	if err := client.Set(
 		subCtx,
 		subscriptionKey,
-		callbackURL,
+		storedCallbacks,
 		0,
 	).Err(); err != nil {
 		cancel()
@@ -431,24 +503,22 @@ func startSubscription(
 	}
 
 	info := &subscriptionInfo{
-		ID:          subscriptionID,
-		Key:         subscriptionKey,
-		Channel:     channelName,
-		CallbackURL: callbackURL,
+		ID:        subscriptionID,
+		Key:       subscriptionKey,
+		Channel:   channelName,
+		Callbacks: callbacks,
 	}
 
+	clientHandedOff = true
 	go runSubscription(
 		subCtx,
 		pubsub,
 		SubscriptionListener{
-			Channel:     channelName,
-			CallbackURL: callbackURL,
-			Callbacks: []func(
-				url string,
-				message PublishRequest,
-			){
-				sendMessageToEndpoint,
-			},
+			Channel:        channelName,
+			Callbacks:      callbacks,
+			Tenant:         principal.Tenant,
+			RedisClient:    subscriptionClient,
+			OwnRedisClient: ownSubscriptionClient,
 		},
 		info,
 	)
@@ -466,6 +536,9 @@ func runSubscription(
 
 	defer dispatcher.close()
 	defer manager.unregister(info.Key)
+	if listener.OwnRedisClient && listener.RedisClient != nil {
+		defer listener.RedisClient.Close()
+	}
 
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(
@@ -535,13 +608,13 @@ func runSubscription(
 				continue
 			}
 
-			for _, callback := range listener.Callbacks {
-				dispatcher.dispatch(
-					callback,
-					listener.CallbackURL,
-					message,
-				)
-			}
+			dispatchCallbackConfig(
+				dispatcher,
+				listener.Callbacks,
+				message,
+				listener.Tenant,
+				listener.RedisClient,
+			)
 
 			if message.Type == "Signal" &&
 				message.Message == "UNSUBSCRIBE" {
@@ -650,6 +723,18 @@ func activeChannelsHandler(
 		return
 	}
 
+	if principal, ok := principalFromRequest(r); ok &&
+		principal.Tenant != "" {
+		prefix := "tenant:" + principal.Tenant + ":"
+		filtered := channels[:0]
+		for _, channel := range channels {
+			if strings.HasPrefix(channel, prefix) {
+				filtered = append(filtered, channel)
+			}
+		}
+		channels = filtered
+	}
+
 	w.Header().Set(
 		"Content-Type",
 		"application/json",
@@ -731,87 +816,171 @@ func NewRouter() http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.Logger)
-	r.Use(authenticateAPIKey)
+	r.Use(authenticateRequest)
 
+	// Legacy API surface. Keep this available while callers move to the
+	// versioned /pubsub API.
 	r.Route("/channels", func(r chi.Router) {
-		r.Post(
-			"/{channelName}/subscribe",
-			subscribeHandler,
-		)
-
-		r.Get(
-			"/",
-			activeChannelsHandler,
-		)
-
-		r.Post(
-			"/groups/save",
-			saveSubscriptionGroup,
-		)
-
-		r.Get(
-			"/groups/load/{groupID}",
-			loadSubscriptionGroup,
-		)
-
-		r.Get(
-			"/groups",
-			listSubscriptionGroups,
-		)
+		r.Post("/{channelName}/subscribe", subscribeHandler)
+		r.Get("/", activeChannelsHandler)
+		r.Post("/groups/save", saveSubscriptionGroup)
+		r.Get("/groups/load/{groupID}", loadSubscriptionGroup)
+		r.Get("/groups", listSubscriptionGroups)
 	})
 
-	r.Get(
-		"/bootstrap",
-		bootstrapHandler,
-	)
+	r.Get("/bootstrap", bootstrapHandler)
+
+	// Canonical public Pub/Sub API. Channels remain runtime callback
+	// subscriptions; subscription groups are saved channel/callback sets.
+	r.Get(publicAPIPrefix+"/auth/profile", authProfileHandler)
+
+	r.Route(publicAPIPrefix+"/users", func(r chi.Router) {
+		r.Use(requireApplicationAdmin)
+		r.Get("/", listACLUsersHandler)
+		r.Post("/", createACLUserHandler)
+		r.Put("/{username}", replaceACLUserHandler)
+		r.Delete("/{username}", deleteACLUserHandler)
+	})
+
+	r.Route(publicAPIPrefix+"/functions", func(r chi.Router) {
+		r.Get("/", listTenantFunctionsHandler)
+		r.Post("/", uploadTenantFunctionHandler)
+		r.Delete("/{name}", deleteTenantFunctionHandler)
+	})
+
+	r.Route(publicAPIPrefix+"/channels", func(r chi.Router) {
+		r.Get("/", activeChannelsHandler)
+		r.Post("/", createChannelHandler)
+
+		r.Post("/save", managedGroupGuard(saveActiveChannelsGroup))
+		r.Get("/groups", managedGroupGuard(listSubscriptionGroups))
+		r.Post("/groups", managedGroupGuard(createSubscriptionGroup))
+		r.Get("/groups/{groupID}", managedGroupGuard(getSubscriptionGroup))
+		r.Delete("/groups/{groupID}", managedGroupGuard(deleteSubscriptionGroup))
+		r.Post("/groups/{groupID}/load", managedGroupGuard(loadSubscriptionGroup))
+
+		r.Post("/{channelName}", createChannelHandler)
+		r.Post("/{channelName}/publish", publishChannelHandler)
+		r.Get("/{channelName}/subscribe", subscribeHandler)
+		r.Post("/{channelName}/subscribe", subscribeHandler)
+	})
 
 	return r
 }
 
-func subscribeHandler(
+func createChannelHandler(
 	w http.ResponseWriter,
 	r *http.Request,
 ) {
-	channelName := chi.URLParam(
-		r,
-		"channelName",
+	channelName := strings.TrimSpace(
+		chi.URLParam(r, "channelName"),
 	)
-
-	var requestBody struct {
-		CallbackURL string `json:"callbackURL"`
-	}
-
-	if err := json.NewDecoder(
-		r.Body,
-	).Decode(&requestBody); err != nil {
-		http.Error(
-			w,
-			"Failed to parse request body",
-			http.StatusBadRequest,
+	if channelName == "" {
+		channelName = strings.TrimSpace(
+			r.URL.Query().Get("name"),
 		)
-		return
 	}
-
-	callbackURL := requestBody.CallbackURL
-
-	if callbackURL == "" {
-		callbackURL = os.Getenv(
-			"PUBSUB_DEFAULT_CALLBACK_URL",
-		)
-
-		if callbackURL == "" {
+	if channelName == "" {
+		var err error
+		channelName, err = generateChannelName()
+		if err != nil {
 			http.Error(
 				w,
-				"Default callback URL not set",
+				"Error generating channel name",
 				http.StatusInternalServerError,
 			)
 			return
 		}
 	}
 
-	info, err := startSubscription(
+	startChannelCallback(
+		w,
+		r,
 		channelName,
-		callbackURL,
+	)
+}
+
+func subscribeHandler(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	channelName := strings.TrimSpace(
+		chi.URLParam(r, "channelName"),
+	)
+	if channelName == "" {
+		http.Error(
+			w,
+			"Channel name is required",
+			http.StatusBadRequest,
+		)
+		return
+	}
+
+	startChannelCallback(
+		w,
+		r,
+		channelName,
+	)
+}
+
+func startChannelCallback(
+	w http.ResponseWriter,
+	r *http.Request,
+	channelName string,
+) {
+	callbacks, err := parseCallbackConfigFromRequest(r)
+	if err != nil {
+		http.Error(
+			w,
+			err.Error(),
+			http.StatusBadRequest,
+		)
+		return
+	}
+
+	if callbackConfigEmpty(callbacks) {
+		defaultCallbackURL := strings.TrimSpace(
+			os.Getenv("PUBSUB_DEFAULT_CALLBACK_URL"),
+		)
+		if defaultCallbackURL != "" {
+			callbacks = singleHTTPCallbackConfig(
+				defaultCallbackURL,
+			)
+		}
+	}
+	if callbackConfigEmpty(callbacks) {
+		http.Error(
+			w,
+			"Callback configuration is required",
+			http.StatusBadRequest,
+		)
+		return
+	}
+
+	principal, _ := principalFromRequest(r)
+	provider, providerErr := authProviderFromEnv()
+	if providerErr != nil {
+		http.Error(w, providerErr.Error(), http.StatusInternalServerError)
+		return
+	}
+	if provider != nil && principal.Tenant != "" {
+		channelName, err = scopeChannelForPrincipal(principal, channelName)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		for _, callback := range callbacks.Callbacks {
+			if err := validateTenantFunctionCallback(principal, callback); err != nil {
+				http.Error(w, err.Error(), http.StatusForbidden)
+				return
+			}
+		}
+	}
+
+	info, err := startSubscriptionForPrincipal(
+		channelName,
+		callbacks,
+		principal,
 	)
 	if err != nil {
 		fmt.Printf(
@@ -831,14 +1000,18 @@ func subscribeHandler(
 	response := subscribeResponse{
 		SubscriptionID: info.ID,
 		Channel:        info.Channel,
-		CallbackURL:    info.CallbackURL,
+		Callbacks:      info.Callbacks.Callbacks,
 	}
 
 	w.Header().Set(
 		"Content-Type",
 		"application/json",
 	)
-	w.WriteHeader(http.StatusCreated)
+	if r.Method == http.MethodGet {
+		w.WriteHeader(http.StatusOK)
+	} else {
+		w.WriteHeader(http.StatusCreated)
+	}
 
 	if err := json.NewEncoder(
 		w,
@@ -848,6 +1021,18 @@ func subscribeHandler(
 			err,
 		)
 	}
+}
+
+func generateChannelName() (string, error) {
+	var random [8]byte
+
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", err
+	}
+
+	return "channel-" + hex.EncodeToString(
+		random[:],
+	), nil
 }
 
 func generateGroupID() string {
@@ -907,7 +1092,7 @@ func saveSubscriptionGroup(
 	groupID := generateGroupID()
 
 	for _, key := range activeSubscriptions {
-		callbackURL, err := client.Get(
+		storedCallbacks, err := client.Get(
 			rootCtx,
 			key,
 		).Result()
@@ -954,7 +1139,7 @@ func saveSubscriptionGroup(
 		if err := client.Set(
 			rootCtx,
 			subscriptionKey,
-			callbackURL,
+			storedCallbacks,
 			0,
 		).Err(); err != nil {
 			http.Error(
@@ -1010,7 +1195,7 @@ func loadSubscriptionGroup(
 	loaded := 0
 
 	for _, key := range groupMembers {
-		callbackURL, err := client.Get(
+		storedCallbacks, err := client.Get(
 			rootCtx,
 			key,
 		).Result()
@@ -1042,9 +1227,21 @@ func loadSubscriptionGroup(
 			continue
 		}
 
-		if _, err := startSubscription(
+		callbacks, err := decodeStoredCallbackConfig(
+			storedCallbacks,
+		)
+		if err != nil {
+			fmt.Printf(
+				"Error decoding callbacks for channel %s: %v\n",
+				channelName,
+				err,
+			)
+			continue
+		}
+
+		if _, err := startSubscriptionWithCallbacks(
 			channelName,
-			callbackURL,
+			callbacks,
 		); err != nil {
 			fmt.Printf(
 				"Error loading subscription for channel %s: %v\n",
@@ -1113,6 +1310,192 @@ func extractGroupChannelName(
 	}
 
 	return parts[1], true
+}
+
+func getSubscriptionGroup(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	groupID := strings.TrimSpace(
+		chi.URLParam(r, "groupID"),
+	)
+	members, err := readSubscriptionGroup(groupID)
+	if err != nil {
+		http.Error(
+			w,
+			"Error retrieving subscription group data",
+			http.StatusInternalServerError,
+		)
+		return
+	}
+	if len(members) == 0 {
+		http.Error(
+			w,
+			"Subscription group not found",
+			http.StatusNotFound,
+		)
+		return
+	}
+
+	w.Header().Set(
+		"Content-Type",
+		"application/json",
+	)
+	w.WriteHeader(http.StatusOK)
+
+	if err := json.NewEncoder(w).Encode(
+		subscriptionGroupResponse{
+			GroupID: groupID,
+			Members: members,
+		},
+	); err != nil {
+		fmt.Printf(
+			"Error encoding subscription group: %v\n",
+			err,
+		)
+	}
+}
+
+func deleteSubscriptionGroup(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	groupID := strings.TrimSpace(
+		chi.URLParam(r, "groupID"),
+	)
+	keys, err := scanKeys(
+		fmt.Sprintf(
+			"%s:%s:*",
+			subscriptionGroupsPrefix,
+			groupID,
+		),
+	)
+	if err != nil {
+		http.Error(
+			w,
+			"Error retrieving subscription group data",
+			http.StatusInternalServerError,
+		)
+		return
+	}
+	if len(keys) == 0 {
+		http.Error(
+			w,
+			"Subscription group not found",
+			http.StatusNotFound,
+		)
+		return
+	}
+
+	deleted, err := client.Del(
+		rootCtx,
+		keys...,
+	).Result()
+	if err != nil {
+		http.Error(
+			w,
+			"Error deleting subscription group",
+			http.StatusInternalServerError,
+		)
+		return
+	}
+
+	w.Header().Set(
+		"Content-Type",
+		"application/json",
+	)
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(
+		map[string]interface{}{
+			"groupID": groupID,
+			"deleted": deleted,
+		},
+	)
+}
+
+func readSubscriptionGroup(
+	groupID string,
+) ([]subscriptionGroupMember, error) {
+	keys, err := scanKeys(
+		fmt.Sprintf(
+			"%s:%s:*",
+			subscriptionGroupsPrefix,
+			groupID,
+		),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	members := make(
+		[]subscriptionGroupMember,
+		0,
+		len(keys),
+	)
+
+	for _, key := range keys {
+		storedCallbacks, err := client.Get(
+			rootCtx,
+			key,
+		).Result()
+		if err != nil {
+			if errors.Is(err, redis.Nil) {
+				continue
+			}
+			return nil, err
+		}
+
+		prefix := fmt.Sprintf(
+			"%s:%s:",
+			subscriptionGroupsPrefix,
+			groupID,
+		)
+		remainder := strings.TrimPrefix(
+			key,
+			prefix,
+		)
+		parts := strings.SplitN(
+			remainder,
+			":",
+			2,
+		)
+		if len(parts) != 2 ||
+			parts[0] == "" ||
+			parts[1] == "" {
+			continue
+		}
+
+		callbacks, err := decodeStoredCallbackConfig(
+			storedCallbacks,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		members = append(
+			members,
+			subscriptionGroupMember{
+				SubscriptionID: parts[0],
+				Channel:        parts[1],
+				Callbacks:      callbacks.Callbacks,
+			},
+		)
+	}
+
+	sort.Slice(
+		members,
+		func(i, j int) bool {
+			if members[i].Channel == members[j].Channel {
+				return members[i].SubscriptionID <
+					members[j].SubscriptionID
+			}
+
+			return members[i].Channel <
+				members[j].Channel
+		},
+	)
+
+	return members, nil
 }
 
 func listSubscriptionGroups(
