@@ -53,6 +53,8 @@ type Observer struct {
 	done    chan struct{}
 	close   sync.Once
 	dropped atomic.Uint64
+	sent    atomic.Uint64
+	failed  atomic.Uint64
 }
 
 func New(cfg Config) *Observer {
@@ -103,6 +105,23 @@ func (o *Observer) Dropped() uint64 {
 	return o.dropped.Load()
 }
 
+// Sent is the number of events for which Axiom returned a 2xx response.
+func (o *Observer) Sent() uint64 {
+	if o == nil {
+		return 0
+	}
+	return o.sent.Load()
+}
+
+// Failed is the number of queued events whose ingest request failed or returned
+// a non-2xx response. It is observation evidence only and never data-plane authority.
+func (o *Observer) Failed() uint64 {
+	if o == nil {
+		return 0
+	}
+	return o.failed.Load()
+}
+
 func (o *Observer) Close(ctx context.Context) error {
 	if o == nil || !o.cfg.Enabled || o.cfg.Token == "" {
 		return nil
@@ -151,7 +170,11 @@ func importantChannel(channel string) bool {
 func (o *Observer) run() {
 	defer close(o.done)
 	for event := range o.queue {
-		_ = o.send(event)
+		if err := o.send(event); err != nil {
+			o.failed.Add(1)
+		} else {
+			o.sent.Add(1)
+		}
 	}
 }
 
