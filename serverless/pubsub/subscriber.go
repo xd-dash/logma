@@ -18,6 +18,8 @@ type Subscriber struct {
 	stopped   chan struct{}
 	ready     chan struct{}
 	readyOnce sync.Once
+	errMu     sync.RWMutex
+	lastErr   error
 }
 
 func Subscribe(ctx context.Context, client *redis.Client, channel string, onMessage func(payload string)) *Subscriber {
@@ -32,6 +34,23 @@ func (s *Subscriber) Stopped() <-chan struct{} { return s.stopped }
 // Callers that must not start a producer before its consumer exists can wait
 // on Ready together with their own context cancellation.
 func (s *Subscriber) Ready() <-chan struct{} { return s.ready }
+
+// LastError returns the most recent Redis subscription acknowledgement error.
+// It is diagnostic state only; Subscribe continues its bounded reconnect loop.
+func (s *Subscriber) LastError() error {
+	if s == nil {
+		return nil
+	}
+	s.errMu.RLock()
+	defer s.errMu.RUnlock()
+	return s.lastErr
+}
+
+func (s *Subscriber) setLastError(err error) {
+	s.errMu.Lock()
+	s.lastErr = err
+	s.errMu.Unlock()
+}
 
 func (s *Subscriber) markReady() {
 	s.readyOnce.Do(func() { close(s.ready) })
@@ -49,6 +68,7 @@ func (s *Subscriber) run(ctx context.Context, client *redis.Client, channel stri
 		_, err := ps.Receive(receiveCtx)
 		cancel()
 		if err != nil {
+			s.setLastError(err)
 			_ = ps.Close()
 			if !sleepContext(ctx, delay) {
 				return
@@ -59,6 +79,7 @@ func (s *Subscriber) run(ctx context.Context, client *redis.Client, channel stri
 			}
 			continue
 		}
+		s.setLastError(nil)
 		s.markReady()
 		delay = reconnectMinDelay
 
