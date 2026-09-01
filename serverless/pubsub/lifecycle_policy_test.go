@@ -16,6 +16,7 @@ func TestLifecyclePoliciesCompileThroughEnergyModel(t *testing.T) {
 	}{
 		{Policy3S, 3 * time.Second, 0},
 		{Policy3Publishes, 0, 3},
+		{Policy30S, 30 * time.Second, 0},
 		{Policy30S64Publishes, 30 * time.Second, 64},
 		{Policy5M, 5 * time.Minute, 0},
 		{Policy20M, 20 * time.Minute, 0},
@@ -49,11 +50,11 @@ func TestLifecyclePoliciesCompileThroughEnergyModel(t *testing.T) {
 func TestConfigureDefaultWithLifecycle(t *testing.T) {
 	rt := NewRuntime(nil)
 	rt.ConfigureDefaultWithLifecycle(
-		Policy30S64Publishes,
+		Policy30S,
 		func(context.Context) error { return nil },
 		nil,
 	)
-	if rt.spec.Lifecycle != Policy30S64Publishes {
+	if rt.spec.Lifecycle != Policy30S {
 		t.Fatalf("lifecycle = %q", rt.spec.Lifecycle)
 	}
 }
