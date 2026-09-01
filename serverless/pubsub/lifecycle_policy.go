@@ -27,6 +27,7 @@ const (
 	PolicyNone           Policy = ""
 	Policy3S             Policy = "3s"
 	Policy3Publishes     Policy = "3-publishes"
+	Policy30S            Policy = "30s"
 	Policy30S64Publishes Policy = "30s-64-publishes"
 	Policy5M             Policy = "5m"
 	Policy20M            Policy = "20m"
@@ -49,6 +50,8 @@ func (p Policy) policySpec() (ratelimiter.PolicySpec, error) {
 	case Policy3Publishes:
 		publishes, err := ratelimiter.NewScaleClass(3)
 		return ratelimiter.PolicySpec{Publishes: publishes}, err
+	case Policy30S:
+		return ratelimiter.PolicySpec{Duration: ratelimiter.Duration30S}, nil
 	case Policy30S64Publishes:
 		publishes, err := ratelimiter.NewScaleClass(64)
 		return ratelimiter.PolicySpec{Publishes: publishes, Duration: ratelimiter.Duration30S}, err
