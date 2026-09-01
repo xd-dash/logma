@@ -71,11 +71,13 @@ jobs:
           REDIS_URI: 127.0.0.1:16379
           API_KEY: lifecycle-composition-test
           LOGMA_RATELIMITER_BOOTSTRAP: internal
+          LOGMA_LIFECYCLE_STATE_DIR: /tmp/logma-lifecycle-state
         run: |
           set -euo pipefail
+          rm -rf "$LOGMA_LIFECYCLE_STATE_DIR"
           nohup go run ./cmd/api 18081 >/tmp/logma-lifecycle-composition.log 2>&1 &
           for _ in $(seq 1 180); do
-            if curl -fsS -H 'Authorization: Bearer lifecycle-composition-test' http://127.0.0.1:18081/lifecycle/ >/dev/null 2>&1; then
+            if curl -fsS -H 'X-API-Key: lifecycle-composition-test' http://127.0.0.1:18081/lifecycle/ >/dev/null 2>&1; then
               exit 0
             fi
             sleep 0.1
@@ -83,15 +85,20 @@ jobs:
           cat /tmp/logma-lifecycle-composition.log >&2 || true
           exit 1
 
-      - name: Verify lifecycle policy surface
+      - name: Verify lifecycle API contract
         shell: bash
         run: |
           set -euo pipefail
-          body="$(curl -fsS -H 'Authorization: Bearer lifecycle-composition-test' http://127.0.0.1:18081/lifecycle/)"
+          status="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:18081/lifecycle/policies)"
+          test "$status" = "401"
+          body="$(curl -fsS -H 'X-API-Key: lifecycle-composition-test' http://127.0.0.1:18081/lifecycle/policies)"
           printf '%s\n' "$body"
           grep -q 'smoke-10m' <<<"$body"
+          grep -q '10m0s' <<<"$body"
 
       - name: Cleanup
         if: always()
         shell: bash
-        run: docker rm -f logma-lifecycle-redis >/dev/null 2>&1 || true
+        run: |
+          docker rm -f logma-lifecycle-redis >/dev/null 2>&1 || true
+          rm -rf /tmp/logma-lifecycle-state
