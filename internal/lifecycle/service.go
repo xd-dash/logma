@@ -2,7 +2,9 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -34,26 +36,7 @@ func NewService(client redis.UniversalClient, stateDir string, tickInterval time
 		tickInterval = defaultTickInterval
 	}
 
-	resolver := ratelimiter.TargetResolverFunc(func(in ratelimiter.Input, stage ratelimiter.Stage) []ratelimiter.Target {
-		if stage != ratelimiter.StageShutdown {
-			return nil
-		}
-		channel := in.CallbackData["shutdown_channel"]
-		if channel == "" {
-			return nil
-		}
-		data := make(ratelimiter.Metadata, len(in.CallbackData))
-		for key, value := range in.CallbackData {
-			if key != "shutdown_channel" {
-				data[key] = value
-			}
-		}
-		return []ratelimiter.Target{{
-			Channel: channel,
-			Purpose: ratelimiter.PurposeLifecycleControl,
-			Data:    data,
-		}}
-	})
+	resolver := lifecycleResolver()
 	profile := lifecycleprofile.New(resolver)
 	redisStore, err := ratelimiter.NewRedisStore(client, ratelimiter.RedisConfig{Keyspace: "logma:lifecycle"})
 	if err != nil {
@@ -74,31 +57,7 @@ func NewService(client redis.UniversalClient, stateDir string, tickInterval time
 	}, nil
 }
 
-func (s *Service) Start(ctx context.Context) error {
-	if err := s.redisStore.Bootstrap(ctx, lifecycleprofile.New(s.resolver())); err != nil {
-		return fmt.Errorf("bootstrap lifecycle profile: %w", err)
-	}
-	regs, err := s.store.LoadAll()
-	if err != nil {
-		return fmt.Errorf("load lifecycle registrations: %w", err)
-	}
-	for _, reg := range regs {
-		if err := s.arm(ctx, reg, false); err != nil {
-			return fmt.Errorf("reconstruct lifecycle %s: %w", reg.DeploymentID, err)
-		}
-		s.registrations[reg.DeploymentID] = reg
-	}
-
-	runCtx, cancel := context.WithCancel(ctx)
-	s.cancel = cancel
-	go s.run(runCtx)
-	return nil
-}
-
-// resolver mirrors the resolver used to construct the limiter. It is kept as a
-// method so Bootstrap receives the same profile behavior without exposing the
-// resolver outside this package.
-func (s *Service) resolver() ratelimiter.TargetResolver {
+func lifecycleResolver() ratelimiter.TargetResolver {
 	return ratelimiter.TargetResolverFunc(func(in ratelimiter.Input, stage ratelimiter.Stage) []ratelimiter.Target {
 		if stage != ratelimiter.StageShutdown {
 			return nil
@@ -117,17 +76,75 @@ func (s *Service) resolver() ratelimiter.TargetResolver {
 	})
 }
 
+func (s *Service) Start(ctx context.Context) error {
+	if err := s.redisStore.Bootstrap(ctx, lifecycleprofile.New(lifecycleResolver())); err != nil {
+		return fmt.Errorf("bootstrap lifecycle profile: %w", err)
+	}
+	regs, err := s.store.LoadAll()
+	if err != nil {
+		return fmt.Errorf("load lifecycle registrations: %w", err)
+	}
+	for _, reg := range regs {
+		if _, err := s.arm(ctx, reg, false); err != nil {
+			return fmt.Errorf("reconstruct lifecycle %s: %w", reg.DeploymentID, err)
+		}
+		s.registrations[reg.DeploymentID] = reg
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	s.cancel = cancel
+	go s.run(runCtx)
+	return nil
+}
+
 func (s *Service) Register(ctx context.Context, req RegisterRequest) (Registration, error) {
-	reg, err := NewRegistration(req, time.Now())
+	if existing, err := s.store.Load(req.DeploymentID); err == nil {
+		matches, matchErr := existing.MatchesRequest(req)
+		if matchErr != nil {
+			return Registration{}, matchErr
+		}
+		if !matches {
+			return Registration{}, fmt.Errorf("deployment %q already has a different lifecycle registration", req.DeploymentID)
+		}
+		if _, err := s.arm(ctx, existing, false); err != nil {
+			return existing, fmt.Errorf("re-arm existing lifecycle registration: %w", err)
+		}
+		s.mu.Lock()
+		s.registrations[existing.DeploymentID] = existing
+		s.mu.Unlock()
+		return existing, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Registration{}, fmt.Errorf("load existing lifecycle registration: %w", err)
+	}
+
+	reg, err := NewRegistration(req, time.Now().UTC())
 	if err != nil {
 		return Registration{}, err
 	}
-	if err := s.store.Save(reg); err != nil {
-		return Registration{}, fmt.Errorf("persist lifecycle registration: %w", err)
+	if err := s.store.Create(reg); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			existing, loadErr := s.store.Load(req.DeploymentID)
+			if loadErr != nil {
+				return Registration{}, fmt.Errorf("load concurrently-created lifecycle registration: %w", loadErr)
+			}
+			matches, matchErr := existing.MatchesRequest(req)
+			if matchErr != nil {
+				return Registration{}, matchErr
+			}
+			if !matches {
+				return Registration{}, fmt.Errorf("deployment %q concurrently registered with different lifecycle intent", req.DeploymentID)
+			}
+			reg = existing
+		} else {
+			return Registration{}, fmt.Errorf("persist lifecycle registration: %w", err)
+		}
 	}
-	if err := s.arm(ctx, reg, true); err != nil {
-		_ = s.store.Delete(reg.DeploymentID)
-		return Registration{}, fmt.Errorf("arm lifecycle registration: %w", err)
+
+	// The durable record is authoritative and deliberately remains present if
+	// Redis arming fails. A subsequent retry/start reconstructs this same absolute
+	// deadline instead of creating a new one.
+	if _, err := s.arm(ctx, reg, true); err != nil {
+		return reg, fmt.Errorf("arm lifecycle registration: %w", err)
 	}
 	s.mu.Lock()
 	s.registrations[reg.DeploymentID] = reg
@@ -146,6 +163,8 @@ func (s *Service) List() []Registration {
 	return regs
 }
 
+// Delete is administrative unregister, not cleanup acknowledgement. Callers
+// must not use it as evidence that deployment resources were destroyed.
 func (s *Service) Delete(ctx context.Context, deploymentID string) error {
 	if deploymentID == "" {
 		return fmt.Errorf("deployment id is required")
@@ -174,11 +193,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	}
 }
 
-func (s *Service) arm(ctx context.Context, reg Registration, reset bool) error {
-	remaining := time.Until(reg.Deadline)
-	if remaining < time.Millisecond {
-		remaining = time.Millisecond
-	}
+func (s *Service) arm(ctx context.Context, reg Registration, reset bool) (bool, error) {
 	callbackData := ratelimiter.Metadata{
 		"deployment_id":    reg.DeploymentID,
 		"policy_code":      reg.PolicyCode,
@@ -192,7 +207,7 @@ func (s *Service) arm(ctx context.Context, reg Registration, reset bool) error {
 	for key, value := range reg.Metadata {
 		callbackData[key] = value
 	}
-	in := ratelimiter.Input{
+	return s.limiter.ArmTimerAt(ctx, ratelimiter.Input{
 		Bucket: bucketFor(reg.DeploymentID),
 		Request: ratelimiter.Request{
 			ID:        reg.DeploymentID,
@@ -201,14 +216,7 @@ func (s *Service) arm(ctx context.Context, reg Registration, reset bool) error {
 			Resource:  reg.DeploymentID,
 		},
 		CallbackData: callbackData,
-		Preflight: ratelimiter.PreflightOptions{
-			Shutdown: ratelimiter.ShutdownConditions{
-				Timer: &ratelimiter.TimerCondition{After: remaining, Reset: reset},
-			},
-		},
-	}
-	_, err := s.limiter.Check(ctx, in, ratelimiter.Limit{MaxRequests: 1, Window: time.Millisecond})
-	return err
+	}, reg.Deadline, reset)
 }
 
 func (s *Service) run(ctx context.Context) {
