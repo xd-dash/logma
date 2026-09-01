@@ -5,6 +5,7 @@ on:
     branches:
       - lifecycle-policy-retention
       - reconcile-lifecycle-main
+      - ratelimiter-policy-v2
     paths:
       - ".github/requests/lifecycle-composition.txt"
 
