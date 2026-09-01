@@ -50,6 +50,11 @@ func validCapability(part string) bool {
 	return part != "" && !strings.ContainsAny(part, ":*?[]{} \t\r\n")
 }
 
+func validCommand(command string) bool {
+	command = strings.TrimSpace(command)
+	return command != "" && command == strings.ToLower(command) && !strings.ContainsAny(command, "+-~&%:*?[]{} \t\r\n")
+}
+
 // Name returns <scope>:<subsystem>:<resource...>.
 func (s Scope) Name(subsystem string, resource ...string) string {
 	parts := []string{clean(string(s)), clean(subsystem)}
@@ -90,15 +95,16 @@ func (w Worker) ReadPattern() string    { return "%R~" + w.prefix() }
 func (w Worker) WritePattern() string   { return "%W~" + w.prefix() }
 func (w Worker) ChannelPattern() string { return "&" + w.prefix() }
 
-// Profile is the deployable least-privilege resource capability set for a
-// Fatline worker. Key and Pub/Sub capabilities are separate because Redis ACLs
-// authorize them independently. Command permissions are intentionally not part
-// of this type and must be supplied by the deployment profile.
+// Profile is the deployable least-privilege capability set for a Fatline
+// worker. Key, Pub/Sub and command capabilities are all material authority and
+// therefore travel together. Bootstrap-only commands such as FUNCTION LOAD are
+// deliberately excluded from normal runtime profiles.
 type Profile struct {
-	Scope              Scope
-	KeySubsystems      []string
-	ChannelSubsystems  []string
-	AllowGlobalRelay   bool
+	Scope             Scope
+	KeySubsystems     []string
+	ChannelSubsystems []string
+	Commands          []string
+	AllowGlobalRelay  bool
 }
 
 func (p Profile) Validate() error {
@@ -106,6 +112,11 @@ func (p Profile) Validate() error {
 	for _, capability := range append(append([]string{}, p.KeySubsystems...), p.ChannelSubsystems...) {
 		if !validCapability(capability) {
 			return fmt.Errorf("invalid worker capability %q", capability)
+		}
+	}
+	for _, command := range p.Commands {
+		if !validCommand(command) {
+			return fmt.Errorf("invalid Redis command capability %q", command)
 		}
 	}
 	return nil
@@ -123,9 +134,9 @@ func unique(values []string) []string {
 	return out
 }
 
-// ACLPatterns returns only resource patterns; deployments still decide the
-// allowed command/function set. A normal worker should not receive FUNCTION
-// LOAD/DELETE/FLUSH authority.
+// ACLPatterns returns resource patterns only. Call ACLRules when materializing
+// a complete runtime ACL so command permissions cannot silently drift from the
+// package-owned worker profile.
 func (p Profile) ACLPatterns() ([]string, error) {
 	if err := p.Validate(); err != nil { return nil, err }
 	patterns := make([]string, 0, len(p.KeySubsystems)+len(p.ChannelSubsystems)+1)
@@ -139,9 +150,38 @@ func (p Profile) ACLPatterns() ([]string, error) {
 	return patterns, nil
 }
 
-// NewsProfile captures the capabilities required by the current News worker:
-// application channels, Logma invocation/runtime records, and ratelimiter-owned
-// lifecycle keys. Global relay remains opt-in.
+// ACLRules returns the resource patterns plus explicit +command grants needed
+// by the runtime profile. It never grants command categories or admin/script
+// authority implicitly.
+func (p Profile) ACLRules() ([]string, error) {
+	patterns, err := p.ACLPatterns()
+	if err != nil { return nil, err }
+	rules := append([]string{}, patterns...)
+	for _, command := range unique(p.Commands) {
+		rules = append(rules, "+"+command)
+	}
+	return rules, nil
+}
+
+// NewsProfile captures the complete steady-state capabilities required by the
+// current News worker: News publication, Logma invocation/runtime leases and
+// ratelimiter lifecycle Functions. Redis ACLs enforce commands executed from
+// inside FCALL against the caller, so the underlying Function commands are
+// listed explicitly as well as FCALL itself.
 func NewsProfile(scope Scope) Profile {
-	return Profile{Scope:scope, KeySubsystems:[]string{"logma", "ratelimiter"}, ChannelSubsystems:[]string{"news"}}
+	return Profile{
+		Scope: scope,
+		KeySubsystems: []string{"logma", "ratelimiter"},
+		ChannelSubsystems: []string{"news"},
+		Commands: []string{
+			"ping", "hello", "client",
+			"multi", "exec",
+			"hset", "hget", "hdel", "hexists", "expire",
+			"sadd", "srem", "smembers", "del",
+			"fcall", "publish", "subscribe", "unsubscribe",
+			"type", "time",
+			"zadd", "zcard", "zrange", "zrangebyscore", "zrem", "zremrangebyscore",
+			"incr", "pexpire",
+		},
+	}
 }
