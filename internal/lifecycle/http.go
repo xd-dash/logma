@@ -4,49 +4,62 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	ratelimiter "github.com/dash-xd/ratelimiter"
-	"github.com/go-chi/chi/v5"
 )
 
-func Handler(service *Service) http.Handler {
-	r := chi.NewRouter()
-	r.Get("/policies", func(w http.ResponseWriter, _ *http.Request) {
-		writePolicies(w)
-	})
-	r.Get("/registrations", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, service.List())
-	})
-	r.Post("/registrations", func(w http.ResponseWriter, r *http.Request) {
-		defer r.Body.Close()
-		var req RegisterRequest
-		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&req); err != nil {
-			http.Error(w, "Invalid lifecycle registration", http.StatusBadRequest)
-			return
-		}
-		reg, err := service.Register(r.Context(), req)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		writeJSON(w, http.StatusCreated, reg)
-	})
-	// This endpoint is administrative unregister. It cancels lifecycle intent; it
-	// is not proof that a deployment was destroyed and is not cleanup ack.
-	r.Delete("/registrations/{deploymentID}", func(w http.ResponseWriter, r *http.Request) {
-		if err := service.Delete(r.Context(), chi.URLParam(r, "deploymentID")); err != nil {
-			http.Error(w, "Failed to cancel lifecycle registration", http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-	})
-	return r
+func (r *Runtime) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /", r.handleList)
+	mux.HandleFunc("POST /", r.handleRegister)
+	mux.HandleFunc("GET /policies", r.handlePolicies)
+	mux.HandleFunc("DELETE /{deploymentID}", r.handleUnregister)
+	return mux
 }
 
-func writePolicies(w http.ResponseWriter) {
+func (r *Runtime) handleList(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, r.List())
+}
+
+func (r *Runtime) handleRegister(w http.ResponseWriter, req *http.Request) {
+	defer req.Body.Close()
+	var registration Registration
+	if err := json.NewDecoder(req.Body).Decode(&registration); err != nil {
+		http.Error(w, "Invalid lifecycle registration", http.StatusBadRequest)
+		return
+	}
+	if err := r.Register(req.Context(), registration); err != nil {
+		if strings.Contains(err.Error(), "conflicting lifecycle registration") {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	stored, ok := r.Get(registration.DeploymentID)
+	if !ok {
+		http.Error(w, "Lifecycle registration disappeared", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusCreated, stored)
+}
+
+func (r *Runtime) handleUnregister(w http.ResponseWriter, req *http.Request) {
+	deploymentID := req.PathValue("deploymentID")
+	if deploymentID == "" {
+		http.Error(w, "Missing deployment ID", http.StatusBadRequest)
+		return
+	}
+	if err := r.Unregister(req.Context(), deploymentID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (r *Runtime) handlePolicies(w http.ResponseWriter, _ *http.Request) {
 	names := []ratelimiter.LifecyclePolicyName{
 		ratelimiter.LifecycleSmoke30S,
 		ratelimiter.LifecycleSmoke1M,
@@ -61,7 +74,6 @@ func writePolicies(w http.ResponseWriter) {
 		Name            ratelimiter.LifecyclePolicyName `json:"name"`
 		PolicyCode      string                          `json:"policy_code"`
 		DurationSeconds int64                           `json:"duration_seconds"`
-		Energy          uint16                          `json:"energy"`
 	}
 	out := make([]policyResponse, 0, len(names))
 	for _, name := range names {
@@ -79,7 +91,6 @@ func writePolicies(w http.ResponseWriter) {
 			Name:            name,
 			PolicyCode:      fmt.Sprintf("%d", uint64(code)),
 			DurationSeconds: int64(policy.Duration.Duration() / time.Second),
-			Energy:          policy.EnergyCost(),
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
