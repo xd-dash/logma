@@ -34,6 +34,8 @@ func Handler(service *Service) http.Handler {
 		}
 		writeJSON(w, http.StatusCreated, reg)
 	})
+	// This endpoint is administrative unregister. It cancels lifecycle intent; it
+	// is not proof that a deployment was destroyed and is not cleanup ack.
 	r.Delete("/registrations/{deploymentID}", func(w http.ResponseWriter, r *http.Request) {
 		if err := service.Delete(r.Context(), chi.URLParam(r, "deploymentID")); err != nil {
 			http.Error(w, "Failed to cancel lifecycle registration", http.StatusInternalServerError)
@@ -48,6 +50,7 @@ func writePolicies(w http.ResponseWriter) {
 	names := []ratelimiter.LifecyclePolicyName{
 		ratelimiter.LifecycleSmoke30S,
 		ratelimiter.LifecycleSmoke1M,
+		ratelimiter.LifecycleSmoke10M,
 		ratelimiter.LifecycleSandbox1D,
 		ratelimiter.LifecycleSandbox3D,
 		ratelimiter.LifecycleSandbox7D,
