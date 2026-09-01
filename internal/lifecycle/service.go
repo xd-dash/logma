@@ -77,9 +77,16 @@ func lifecycleResolver() ratelimiter.TargetResolver {
 }
 
 func (s *Service) Start(ctx context.Context) error {
-	if err := s.redisStore.Bootstrap(ctx, lifecycleprofile.New(lifecycleResolver())); err != nil {
-		return fmt.Errorf("bootstrap lifecycle profile: %w", err)
+	internalBootstrap, err := lifecycleBootstrapInternal()
+	if err != nil {
+		return err
 	}
+	if internalBootstrap {
+		if err := s.redisStore.Bootstrap(ctx, lifecycleprofile.New(lifecycleResolver())); err != nil {
+			return fmt.Errorf("bootstrap lifecycle profile: %w", err)
+		}
+	}
+
 	regs, err := s.store.LoadAll()
 	if err != nil {
 		return fmt.Errorf("load lifecycle registrations: %w", err)
