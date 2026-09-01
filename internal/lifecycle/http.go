@@ -48,6 +48,7 @@ func writePolicies(w http.ResponseWriter) {
 	names := []ratelimiter.LifecyclePolicyName{
 		ratelimiter.LifecycleSmoke30S,
 		ratelimiter.LifecycleSmoke1M,
+		ratelimiter.LifecycleSmoke10M,
 		ratelimiter.LifecycleSandbox1D,
 		ratelimiter.LifecycleSandbox3D,
 		ratelimiter.LifecycleSandbox7D,
