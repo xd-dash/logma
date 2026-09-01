@@ -24,7 +24,6 @@ type lifecyclePolicyDescription struct {
 	Name       ratelimiter.LifecyclePolicyName `json:"name"`
 	PolicyCode string                          `json:"policy_code"`
 	Duration   string                          `json:"duration"`
-	Energy     uint16                          `json:"energy"`
 }
 
 func NewLifecycleRouter() (http.Handler, error) {
@@ -132,7 +131,6 @@ func NewLifecycleRouter() (http.Handler, error) {
 				Name:       name,
 				PolicyCode: fmt.Sprintf("%d", uint64(code)),
 				Duration:   policy.Duration.Duration().String(),
-				Energy:     policy.EnergyCost(),
 			})
 		}
 		writeLifecycleJSON(w, http.StatusOK, policies)
