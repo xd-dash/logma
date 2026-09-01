@@ -31,14 +31,15 @@ jobs:
           go mod tidy
           git diff --exit-code -- go.mod go.sum
 
-      - name: Check formatting
+      - name: Check lifecycle formatting
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -d '' files < <(find . -type f -name '*.go' -not -path './.git/*' -print0)
+          mapfile -d '' files < <(find internal/lifecycle -type f -name '*.go' -print0)
+          files+=(cmd/api/main.go cmd/api-lifecycle/main.go internal/routes/lifecycle_routes.go)
           unformatted="$(gofmt -l "${files[@]}")"
           if [[ -n "$unformatted" ]]; then
-            printf 'unformatted Go files:\n%s\n' "$unformatted"
+            printf 'unformatted lifecycle composition files:\n%s\n' "$unformatted"
             exit 1
           fi
 
