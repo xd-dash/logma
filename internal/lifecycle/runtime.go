@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	ratelimiter "github.com/dash-xd/ratelimiter"
@@ -55,9 +56,11 @@ func NewRuntime(ctx context.Context, stateDir string) (*Runtime, error) {
 		}}
 	})
 	profile := lifecycleprofile.New(resolver)
-	if err := store.Bootstrap(ctx, profile); err != nil {
-		_ = client.Close()
-		return nil, fmt.Errorf("bootstrap lifecycle profile: %w", err)
+	if lifecycleBootstrapMode() == "internal" {
+		if err := store.Bootstrap(ctx, profile); err != nil {
+			_ = client.Close()
+			return nil, fmt.Errorf("bootstrap lifecycle profile: %w", err)
+		}
 	}
 	limiter, err := store.Limiter(profile)
 	if err != nil {
@@ -75,6 +78,14 @@ func NewRuntime(ctx context.Context, stateDir string) (*Runtime, error) {
 		return nil, fmt.Errorf("restore lifecycle registrations: %w", err)
 	}
 	return runtime, nil
+}
+
+func lifecycleBootstrapMode() string {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("LOGMA_RATELIMITER_BOOTSTRAP")))
+	if mode == "" {
+		return "internal"
+	}
+	return mode
 }
 
 func (r *Runtime) Close() error {
