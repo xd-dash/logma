@@ -2,7 +2,9 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"time"
 
@@ -83,17 +85,49 @@ func (r *Runtime) Close() error {
 }
 
 func (r *Runtime) Register(ctx context.Context, req RegisterRequest) (Registration, bool, error) {
+	if existing, err := r.state.Load(req.DeploymentID); err == nil {
+		matches, matchErr := existing.MatchesRequest(req)
+		if matchErr != nil {
+			return Registration{}, false, matchErr
+		}
+		if !matches {
+			return Registration{}, false, fmt.Errorf("deployment %q already has different lifecycle intent", req.DeploymentID)
+		}
+		armed, err := r.arm(ctx, existing, false)
+		if err != nil {
+			return existing, false, fmt.Errorf("re-arm existing lifecycle registration: %w", err)
+		}
+		return existing, armed, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Registration{}, false, fmt.Errorf("load existing lifecycle registration: %w", err)
+	}
+
 	reg, err := NewRegistration(req, time.Now().UTC())
 	if err != nil {
 		return Registration{}, false, err
 	}
-	if err := r.state.Save(reg); err != nil {
-		return Registration{}, false, fmt.Errorf("persist lifecycle registration: %w", err)
+	if err := r.state.Create(reg); err != nil {
+		if !errors.Is(err, os.ErrExist) {
+			return Registration{}, false, fmt.Errorf("persist lifecycle registration: %w", err)
+		}
+		existing, loadErr := r.state.Load(req.DeploymentID)
+		if loadErr != nil {
+			return Registration{}, false, fmt.Errorf("load concurrently-created lifecycle registration: %w", loadErr)
+		}
+		matches, matchErr := existing.MatchesRequest(req)
+		if matchErr != nil {
+			return Registration{}, false, matchErr
+		}
+		if !matches {
+			return Registration{}, false, fmt.Errorf("deployment %q concurrently registered with different lifecycle intent", req.DeploymentID)
+		}
+		reg = existing
 	}
-	armed, err := r.arm(ctx, reg, false)
+
+	// Durable intent deliberately remains on disk if live arming fails. A retry or
+	// process restart reconstructs this exact persisted absolute deadline.
+	armed, err := r.arm(ctx, reg, true)
 	if err != nil {
-		// Durable intent deliberately remains on disk so startup reconstruction can
-		// repair Redis after a transient failure.
 		return reg, false, fmt.Errorf("arm lifecycle registration: %w", err)
 	}
 	return reg, armed, nil
@@ -178,6 +212,8 @@ func (r *Runtime) arm(ctx context.Context, reg Registration, reset bool) (bool, 
 		"deployment_id":    reg.DeploymentID,
 		"policy_code":      reg.PolicyCode,
 		"shutdown_channel": reg.ShutdownChannel,
+		"activated_at":     reg.ActivatedAt.UTC().Format(time.RFC3339Nano),
+		"deadline":         reg.Deadline.UTC().Format(time.RFC3339Nano),
 	}
 	if reg.PolicyName != "" {
 		callbackData["policy_name"] = string(reg.PolicyName)
