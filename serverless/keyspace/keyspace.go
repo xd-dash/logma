@@ -52,7 +52,7 @@ func validCapability(part string) bool {
 
 func validCommand(command string) bool {
 	command = strings.TrimSpace(command)
-	return command != "" && command == strings.ToLower(command) && !strings.ContainsAny(command, "+-~&%:*?[]{} \t\r\n")
+	return command != "" && command == strings.ToLower(command) && !strings.ContainsAny(command, "+-@~&%:*?[]{} \t\r\n")
 }
 
 // Name returns <scope>:<subsystem>:<resource...>.
