@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - lifecycle-policy-retention
+      - reconcile-lifecycle-main
     paths:
       - ".github/requests/lifecycle-composition.txt"
 
