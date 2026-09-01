@@ -1,0 +1,96 @@
+name: lifecycle-composition
+
+on:
+  push:
+    branches:
+      - lifecycle-policy-retention
+    paths:
+      - ".github/requests/lifecycle-composition.txt"
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout Logma
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Reconcile module graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          go mod tidy
+          git diff -- go.mod go.sum
+
+      - name: Formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          diff="$(gofmt -d .)"
+          if [[ -n "$diff" ]]; then
+            printf 'gofmt diff:\n%s\n' "$diff"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Unit tests
+        run: go test ./...
+
+      - name: Build canonical API
+        run: go build ./cmd/api
+
+      - name: Start Redis 7.2.5
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --rm --name logma-lifecycle-redis -p 16379:6379 redis:7.2.5 \
+            redis-server --save "" --appendonly no
+          for _ in $(seq 1 100); do
+            if (echo > /dev/tcp/127.0.0.1/16379) >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 0.05
+          done
+          docker logs logma-lifecycle-redis >&2 || true
+          exit 1
+
+      - name: Start canonical Logma lifecycle runtime
+        shell: bash
+        env:
+          REDIS_URI: 127.0.0.1:16379
+          API_KEY: lifecycle-composition-test
+          LOGMA_RATELIMITER_BOOTSTRAP: internal
+        run: |
+          set -euo pipefail
+          nohup go run ./cmd/api 18081 >/tmp/logma-lifecycle-composition.log 2>&1 &
+          for _ in $(seq 1 180); do
+            if curl -fsS -H 'Authorization: Bearer lifecycle-composition-test' http://127.0.0.1:18081/lifecycle/ >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 0.1
+          done
+          cat /tmp/logma-lifecycle-composition.log >&2 || true
+          exit 1
+
+      - name: Verify lifecycle policy surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          body="$(curl -fsS -H 'Authorization: Bearer lifecycle-composition-test' http://127.0.0.1:18081/lifecycle/)"
+          printf '%s\n' "$body"
+          grep -q 'smoke-10m' <<<"$body"
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: docker rm -f logma-lifecycle-redis >/dev/null 2>&1 || true
