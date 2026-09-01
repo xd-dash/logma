@@ -99,8 +99,8 @@ func NewLifecycleRouter() (http.Handler, error) {
 			return
 		}
 		writeLifecycleJSON(w, http.StatusOK, map[string]any{
-			"deployment_id": deploymentID,
-			"timer_removed": removed,
+			"deployment_id":        deploymentID,
+			"timer_removed":        removed,
 			"registration_removed": true,
 		})
 	})
