@@ -23,7 +23,7 @@ const (
 type SubscriptionDescriptor struct { ID string `json:"id"`; Channel string `json:"channel"`; Callback string `json:"callback"` }
 
 type RuntimeRecord struct {
-	Key string `json:"key"`; Namespace string `json:"namespace"`; InstanceID string `json:"instance_id"`; RequestID string `json:"request_id"`; InvocationKey string `json:"invocation_key"`; ShutdownChannel string `json:"shutdown_channel"`; StartedAt time.Time `json:"started_at"`; UpdatedAt time.Time `json:"updated_at"`; Subscriptions []SubscriptionDescriptor `json:"subscriptions"`; Lifecycle Policy `json:"lifecycle,omitempty"`; PolicyCode ratelimiter.PolicyCode `json:"policy_code,omitempty"`; PolicyEnergy uint16 `json:"policy_energy,omitempty"`
+	Key string `json:"key"`; Namespace string `json:"namespace"`; InstanceID string `json:"instance_id"`; RequestID string `json:"request_id"`; InvocationKey string `json:"invocation_key"`; ShutdownChannel string `json:"shutdown_channel"`; StartedAt time.Time `json:"started_at"`; UpdatedAt time.Time `json:"updated_at"`; Subscriptions []SubscriptionDescriptor `json:"subscriptions"`; Lifecycle Policy `json:"lifecycle,omitempty"`; PolicyCode ratelimiter.PolicyCode `json:"policy_code,omitempty"`
 }
 
 // RuntimeRecordKey is retained for callers reading historical unscoped records.
@@ -48,10 +48,10 @@ func (cp ControlPlane) RegisterRuntime(ctx context.Context, invocation Invocatio
 	startedAt := invocation.StartedAt; if startedAt.IsZero() { startedAt = time.Now().UTC() }; now := time.Now().UTC()
 	var policy Policy; if len(policies) > 0 { policy = policies[0] }
 	policyConfig, err := policy.config(); if err != nil { return nil, err }
-	record := RuntimeRecord{Namespace: namespace, InstanceID: cp.InstanceID, RequestID: invocation.RequestID, InvocationKey: InvocationKeyScoped(cp.Scope, invocation), ShutdownChannel: cp.InstanceChannel(cp.ShutdownChannel()), StartedAt: startedAt, UpdatedAt: now, Subscriptions: subscriptions, Lifecycle: policy, PolicyCode: policyConfig.code, PolicyEnergy: policyConfig.energy}
+	record := RuntimeRecord{Namespace: namespace, InstanceID: cp.InstanceID, RequestID: invocation.RequestID, InvocationKey: InvocationKeyScoped(cp.Scope, invocation), ShutdownChannel: cp.InstanceChannel(cp.ShutdownChannel()), StartedAt: startedAt, UpdatedAt: now, Subscriptions: subscriptions, Lifecycle: policy, PolicyCode: policyConfig.code}
 	record.Key = RuntimeRecordKeyScoped(cp.Scope, record.Namespace, record.InstanceID, record.RequestID)
 	encodedSubscriptions, err := json.Marshal(record.Subscriptions); if err != nil { return nil, fmt.Errorf("marshal runtime subscriptions: %w", err) }
-	fields := map[string]any{"namespace":record.Namespace,"instance_id":record.InstanceID,"request_id":record.RequestID,"invocation_key":record.InvocationKey,"shutdown_channel":record.ShutdownChannel,"started_at":record.StartedAt.Format(time.RFC3339Nano),"updated_at":record.UpdatedAt.Format(time.RFC3339Nano),"subscriptions":string(encodedSubscriptions),"lifecycle":string(record.Lifecycle),"policy_code":uint64(record.PolicyCode),"policy_energy":record.PolicyEnergy}
+	fields := map[string]any{"namespace":record.Namespace,"instance_id":record.InstanceID,"request_id":record.RequestID,"invocation_key":record.InvocationKey,"shutdown_channel":record.ShutdownChannel,"started_at":record.StartedAt.Format(time.RFC3339Nano),"updated_at":record.UpdatedAt.Format(time.RFC3339Nano),"subscriptions":string(encodedSubscriptions),"lifecycle":string(record.Lifecycle),"policy_code":uint64(record.PolicyCode)}
 	indexKey := runtimeIndexKeyScoped(cp.Scope, record.Namespace)
 	pipe := cp.Client.TxPipeline(); pipe.HSet(ctx, record.Key, fields); pipe.Expire(ctx, record.Key, runtimeLeaseTTL); pipe.SAdd(ctx, indexKey, record.Key)
 	if _, err := pipe.Exec(ctx); err != nil { return nil, fmt.Errorf("register runtime %s: %w", record.Key, err) }
@@ -64,7 +64,7 @@ func (lease *RuntimeLease) Close() error { var closeErr error; lease.closeOnce.D
 func LoadRuntimeRecord(ctx context.Context, client *redis.Client, key string) (RuntimeRecord,error) {
 	fields,err:=client.HGetAll(ctx,key).Result(); if err!=nil{return RuntimeRecord{},err}; if len(fields)==0{return RuntimeRecord{},redis.Nil}
 	record:=RuntimeRecord{Key:key,Namespace:fields["namespace"],InstanceID:fields["instance_id"],RequestID:fields["request_id"],InvocationKey:fields["invocation_key"],ShutdownChannel:fields["shutdown_channel"],Lifecycle:Policy(fields["lifecycle"])}
-	if value:=fields["policy_code"];value!=""{if parsed,err:=strconv.ParseUint(value,10,64);err==nil{record.PolicyCode=ratelimiter.PolicyCode(parsed)}}; if value:=fields["policy_energy"];value!=""{if parsed,err:=strconv.ParseUint(value,10,16);err==nil{record.PolicyEnergy=uint16(parsed)}}
+	if value:=fields["policy_code"];value!=""{if parsed,err:=strconv.ParseUint(value,10,64);err==nil{record.PolicyCode=ratelimiter.PolicyCode(parsed)}}
 	if value:=fields["started_at"];value!=""{record.StartedAt,_=time.Parse(time.RFC3339Nano,value)}; if value:=fields["updated_at"];value!=""{record.UpdatedAt,_=time.Parse(time.RFC3339Nano,value)}; if value:=fields["subscriptions"];value!=""{if err:=json.Unmarshal([]byte(value),&record.Subscriptions);err!=nil{return RuntimeRecord{},fmt.Errorf("decode runtime subscriptions: %w",err)}}; return record,nil
 }
 
