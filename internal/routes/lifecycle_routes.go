@@ -89,6 +89,8 @@ func NewLifecycleRouter() (http.Handler, error) {
 		writeLifecycleJSON(w, http.StatusOK, results)
 	})
 
+	// Administrative unregister only. It cancels lifecycle intent and must not be
+	// interpreted as teardown proof or cleanup acknowledgement.
 	r.Delete("/{deploymentID}", func(w http.ResponseWriter, req *http.Request) {
 		deploymentID := chi.URLParam(req, "deploymentID")
 		removed, err := runtime.Remove(req.Context(), deploymentID)
@@ -107,6 +109,7 @@ func NewLifecycleRouter() (http.Handler, error) {
 		names := []ratelimiter.LifecyclePolicyName{
 			ratelimiter.LifecycleSmoke30S,
 			ratelimiter.LifecycleSmoke1M,
+			ratelimiter.LifecycleSmoke10M,
 			ratelimiter.LifecycleSandbox1D,
 			ratelimiter.LifecycleSandbox3D,
 			ratelimiter.LifecycleSandbox7D,
