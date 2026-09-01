@@ -23,20 +23,21 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Reconcile module graph
+      - name: Check module graph
         shell: bash
         run: |
           set -euo pipefail
           go mod tidy
-          git diff -- go.mod go.sum
+          git diff --exit-code -- go.mod go.sum
 
-      - name: Formatting
+      - name: Check formatting
         shell: bash
         run: |
           set -euo pipefail
-          diff="$(gofmt -d .)"
-          if [[ -n "$diff" ]]; then
-            printf 'gofmt diff:\n%s\n' "$diff"
+          mapfile -d '' files < <(find . -type f -name '*.go' -not -path './.git/*' -print0)
+          unformatted="$(gofmt -l "${files[@]}")"
+          if [[ -n "$unformatted" ]]; then
+            printf 'unformatted Go files:\n%s\n' "$unformatted"
             exit 1
           fi
 
