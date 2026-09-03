@@ -8,8 +8,8 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// DeleteSubscriber removes a Subscriber and reconciles its reverse Channel
-// and Callback indexes in the same optimistic Redis transaction.
+// DeleteSubscriber removes a Subscriber and reconciles its reverse Channel,
+// Callback, and discovery indexes in the same optimistic Redis transaction.
 func (s *RedisStore) DeleteSubscriber(ctx context.Context, id string) error {
 	id = normalizeIdentity(id)
 	if id == "" {
@@ -35,6 +35,7 @@ func (s *RedisStore) DeleteSubscriber(ctx context.Context, id string) error {
 
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 			pipe.Del(ctx, subscriberKey, callbacksKey)
+			pipe.SRem(ctx, s.keys.Subscribers(), id)
 			if channel != "" {
 				pipe.SRem(ctx, s.keys.ChannelSubscribers(channel), id)
 			}
@@ -99,6 +100,7 @@ func (s *RedisStore) DeleteCallback(ctx context.Context, id string) error {
 
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 			pipe.Del(ctx, resourceKey, subscribersKey, urlsKey)
+			pipe.SRem(ctx, s.keys.Callbacks(), id)
 			return nil
 		})
 		return err
@@ -132,6 +134,7 @@ func (s *RedisStore) DeleteChannel(ctx context.Context, name string) error {
 
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 			pipe.Del(ctx, resourceKey, subscribersKey, publishersKey)
+			pipe.SRem(ctx, s.keys.Channels(), name)
 			return nil
 		})
 		return err
