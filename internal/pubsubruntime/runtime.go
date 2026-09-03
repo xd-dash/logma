@@ -230,16 +230,27 @@ func (r *Runtime) WaitReady(ctx context.Context, name string) error {
 	if !ok {
 		return fmt.Errorf("channel %s is not active", name)
 	}
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-activation.subscriber.Ready():
-		return nil
-	case <-activation.subscriber.Stopped():
+	stoppedError := func() error {
 		if err := activation.subscriber.LastError(); err != nil {
 			return fmt.Errorf("channel %s stopped before ready: %w", name, err)
 		}
 		return fmt.Errorf("channel %s stopped before ready", name)
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-activation.subscriber.Stopped():
+		return stoppedError()
+	case <-activation.subscriber.Ready():
+		// Ready and Stopped can both already be closed if the initial ACK was
+		// immediately followed by listener termination. Do not let select's
+		// random choice turn that state into a successful activation boundary.
+		select {
+		case <-activation.subscriber.Stopped():
+			return stoppedError()
+		default:
+			return nil
+		}
 	}
 }
 
