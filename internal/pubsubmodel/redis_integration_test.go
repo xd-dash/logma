@@ -143,8 +143,13 @@ func assertSet(t *testing.T, ctx context.Context, client *redis.Client, key stri
 	sort.Strings(got)
 	want = append([]string(nil), want...)
 	sort.Strings(want)
-	if !reflect.DeepEqual(got, want) {
+	if len(got) != len(want) {
 		t.Fatalf("SMEMBERS %s = %#v, want %#v", key, got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("SMEMBERS %s = %#v, want %#v", key, got, want)
+		}
 	}
 }
 
