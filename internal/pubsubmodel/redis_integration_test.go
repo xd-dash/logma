@@ -182,7 +182,7 @@ func assertHash(t *testing.T, ctx context.Context, client *redis.Client, key str
 }
 
 func assertSet(t *testing.T, ctx context.Context, client *redis.Client, key string, want []string) {
-	 t.Helper()
+	t.Helper()
 	got, err := client.SMembers(ctx, key).Result()
 	if err != nil {
 		t.Fatalf("SMEMBERS %s: %v", key, err)
