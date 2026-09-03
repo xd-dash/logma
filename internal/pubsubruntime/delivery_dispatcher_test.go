@@ -46,20 +46,29 @@ func TestDeliveryDispatcherDropsWhenBoundedQueueIsFull(t *testing.T) {
 	if elapsed := time.Since(begin); elapsed > 50*time.Millisecond {
 		t.Fatalf("full dispatcher blocked for %s instead of dropping immediately", elapsed)
 	}
+	if got := dispatcher.droppedCount(); got != 1 {
+		t.Fatalf("drop count = %d, want 1", got)
+	}
 
 	close(release)
 	dispatcher.close()
 }
 
-func TestDeliveryDispatcherRejectsCanceledAndClosedWork(t *testing.T) {
+func TestDeliveryDispatcherRejectsCanceledAndClosedWorkWithoutCountingOverflow(t *testing.T) {
 	dispatcher := newDeliveryDispatcher(func(context.Context, string, string) error { return nil })
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if dispatcher.dispatch(deliveryJob{ctx: ctx, subscriberID: "sub", url: "https://example.invalid", payload: "canceled"}) {
 		t.Fatal("dispatcher accepted already-canceled delivery")
 	}
+	if got := dispatcher.droppedCount(); got != 0 {
+		t.Fatalf("canceled work changed overflow count to %d", got)
+	}
 	dispatcher.close()
 	if dispatcher.dispatch(deliveryJob{ctx: context.Background(), subscriberID: "sub", url: "https://example.invalid", payload: "closed"}) {
 		t.Fatal("closed dispatcher accepted delivery")
+	}
+	if got := dispatcher.droppedCount(); got != 0 {
+		t.Fatalf("closed work changed overflow count to %d", got)
 	}
 }
