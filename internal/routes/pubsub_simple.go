@@ -21,18 +21,10 @@ type SubscriptionController interface {
 	ShutdownSubscription(context.Context, string) error
 }
 
-// simpleSubscriptionComposer is a provider-owned atomic primitive for the
-// common Channel + webhook Callback + Subscriber operation. Keeping atomicity
-// below the facade prevents a late conflict from leaving partial declarations
-// or overwriting an independently managed Callback.
 type simpleSubscriptionComposer interface {
 	CreateWebhookSubscription(context.Context, pubsubmodel.Channel, pubsubmodel.Callback, pubsubmodel.Subscriber) error
 }
 
-// simplePubSubAPI is the operator-facing facade over the normalized Pub/Sub
-// resource graph. The graph remains available through /pubsub/* for advanced
-// control-plane use; ordinary callers should not have to manually create a
-// Channel, Callback, and Subscriber for the common webhook-subscription case.
 type simplePubSubAPI struct {
 	store      func() (pubSubResourceStore, error)
 	newID      func() (string, error)
@@ -71,11 +63,10 @@ type simpleGroupOperationResponse struct {
 }
 
 type simpleState struct {
-	Channels        []string `json:"channels"`
-	Subscriptions   []string `json:"subscriptions"`
-	Publishers      []string `json:"publishers"`
-	Groups          []string `json:"groups"`
-	PublisherGroups []string `json:"publisherGroups"`
+	Channels      []string `json:"channels"`
+	Subscriptions []string `json:"subscriptions"`
+	Publishers    []string `json:"publishers"`
+	Groups        []string `json:"groups"`
 }
 
 func newSimplePubSubAPI() *simplePubSubAPI {
@@ -86,15 +77,10 @@ func newSimplePubSubAPI() *simplePubSubAPI {
 	}
 }
 
-// NewSimplePubSubRouter exposes the small, task-oriented graph API. Runtime
-// operations return unavailable until an explicitly authorized controller is
-// composed.
 func NewSimplePubSubRouter() http.Handler {
 	return newSimplePubSubRouter(newSimplePubSubAPI())
 }
 
-// NewSimplePubSubRouterWithSubscriptionController composes the same small API
-// with explicitly supplied runtime authority.
 func NewSimplePubSubRouterWithSubscriptionController(controller SubscriptionController) http.Handler {
 	api := newSimplePubSubAPI()
 	api.controller = controller
@@ -314,17 +300,11 @@ func (a *simplePubSubAPI) state(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to list groups", http.StatusInternalServerError)
 		return
 	}
-	publisherGroups, err := store.PublisherGroupIDs(r.Context())
-	if err != nil {
-		http.Error(w, "failed to list publisher groups", http.StatusInternalServerError)
-		return
-	}
 	writeResource(w, http.StatusOK, simpleState{
-		Channels:        channels,
-		Subscriptions:   subscriptions,
-		Publishers:      publishers,
-		Groups:          groups,
-		PublisherGroups: publisherGroups,
+		Channels:      channels,
+		Subscriptions: subscriptions,
+		Publishers:    publishers,
+		Groups:        groups,
 	})
 }
 
