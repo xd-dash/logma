@@ -33,11 +33,12 @@ type Runtime struct {
 	client           *redis.Client
 	store            ResourceStore
 	subscribe        subscribeFunc
-	sendWebhook      webhookSender
+	delivery         *deliveryDispatcher
 	transportAddress transportAddressFunc
 
 	mu     sync.Mutex
 	active map[string]*channelActivation
+	closed bool
 }
 
 type handlerEntry struct {
@@ -108,9 +109,6 @@ type SubscriberHandle struct {
 	token        uint64
 }
 
-// New retains the historical raw-channel transport behavior for compatibility
-// callers. New Fatline v2 compositions must use NewScoped so transport topics
-// inherit the same explicit security scope as durable resource addresses.
 func New(client *redis.Client, store ResourceStore) (*Runtime, error) {
 	if client == nil {
 		return nil, errors.New("redis client is required")
@@ -123,9 +121,6 @@ func New(client *redis.Client, store ResourceStore) (*Runtime, error) {
 	}, postWebhook), nil
 }
 
-// NewScoped is the canonical Fatline v2 constructor. Logical Channel identity
-// remains application-facing while Redis Pub/Sub transport uses the injective,
-// scope-derived <scope>:logma:transport:channel:<encoded-id> address family.
 func NewScoped(client *redis.Client, store ResourceStore, scope string) (*Runtime, error) {
 	runtime, err := New(client, store)
 	if err != nil {
@@ -133,6 +128,7 @@ func NewScoped(client *redis.Client, store ResourceStore, scope string) (*Runtim
 	}
 	parsedScope, err := keyspace.ParseScope(strings.TrimSpace(scope))
 	if err != nil {
+		runtime.Close()
 		return nil, err
 	}
 	runtime.transportAddress = func(channel string) (string, error) {
@@ -143,20 +139,20 @@ func NewScoped(client *redis.Client, store ResourceStore, scope string) (*Runtim
 
 func newWithDependencies(client *redis.Client, store ResourceStore, subscribe subscribeFunc, sendWebhook webhookSender) *Runtime {
 	return &Runtime{
-		client:      client,
-		store:       store,
-		subscribe:   subscribe,
-		sendWebhook: sendWebhook,
+		client:     client,
+		store:      store,
+		subscribe:  subscribe,
+		delivery:   newDeliveryDispatcher(sendWebhook),
+		active:     make(map[string]*channelActivation),
 		transportAddress: func(channel string) (string, error) {
 			return channel, nil
 		},
-		active: make(map[string]*channelActivation),
 	}
 }
 
-// Activate is retained as a low-level compatibility primitive. Normal v2
-// subscription control uses it only as the shared listener acquisition step;
-// readiness is established separately before an operator activation succeeds.
+// Activate remains a low-level listener-acquisition primitive for compatibility.
+// Normal v2 Subscription activation waits for readiness and attaches a handler;
+// an empty listener is released when no runtime handler needs it.
 func (r *Runtime) Activate(ctx context.Context, name string, onMessage func(string)) (*Handle, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -172,6 +168,9 @@ func (r *Runtime) Activate(ctx context.Context, name string, onMessage func(stri
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.closed {
+		return nil, errors.New("runtime is closed")
+	}
 	if activation, ok := r.active[name]; ok {
 		if onMessage != nil {
 			activation.putHandler("__channel__", onMessage)
@@ -180,24 +179,16 @@ func (r *Runtime) Activate(ctx context.Context, name string, onMessage func(stri
 	}
 
 	subCtx, cancel := context.WithCancel(ctx)
-	activation := &channelActivation{
-		ctx:      subCtx,
-		cancel:   cancel,
-		handlers: make(map[string]handlerEntry),
-	}
+	activation := &channelActivation{ctx: subCtx, cancel: cancel, handlers: make(map[string]handlerEntry)}
 	if onMessage != nil {
 		activation.putHandler("__channel__", onMessage)
 	}
 	activation.subscriber = r.subscribe(subCtx, r.client, transportName, activation.dispatch)
 	r.active[name] = activation
-
 	go r.removeWhenStopped(name, activation)
 	return &Handle{runtime: r, channel: name, activation: activation, sub: activation.subscriber}, nil
 }
 
-// WaitReady waits for Redis to acknowledge the current Channel subscription.
-// Merely owning a reconnecting goroutine is not readiness and must not be
-// reported as successful operator activation.
 func (r *Runtime) WaitReady(ctx context.Context, name string) error {
 	name = strings.TrimSpace(name)
 	r.mu.Lock()
@@ -224,12 +215,10 @@ func (r *Runtime) AttachSubscriber(ctx context.Context, id string) (*SubscriberH
 	if id == "" {
 		return nil, errors.New("subscriber id is required")
 	}
-
 	subscriber, err := r.store.GetSubscriber(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-
 	urls := make([]string, 0)
 	for _, callbackID := range subscriber.CallbackIDs {
 		callback, err := r.store.GetCallback(ctx, callbackID)
@@ -243,6 +232,10 @@ func (r *Runtime) AttachSubscriber(ctx context.Context, id string) (*SubscriberH
 	}
 
 	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return nil, errors.New("runtime is closed")
+	}
 	activation, ok := r.active[subscriber.Channel]
 	if !ok {
 		r.mu.Unlock()
@@ -250,21 +243,13 @@ func (r *Runtime) AttachSubscriber(ctx context.Context, id string) (*SubscriberH
 	}
 	handler := func(payload string) {
 		for _, url := range urls {
-			if err := r.sendWebhook(activation.ctx, url, payload); err != nil && !errors.Is(err, context.Canceled) {
-				fmt.Printf("Subscriber %s webhook %s failed: %v\n", subscriber.ID, url, err)
-			}
+			r.delivery.dispatch(deliveryJob{ctx: activation.ctx, subscriberID: subscriber.ID, url: url, payload: payload})
 		}
 	}
 	token := activation.putHandler(subscriber.ID, handler)
 	r.mu.Unlock()
 
-	return &SubscriberHandle{
-		runtime:      r,
-		channel:      subscriber.Channel,
-		activation:   activation,
-		subscriberID: subscriber.ID,
-		token:        token,
-	}, nil
+	return &SubscriberHandle{runtime: r, channel: subscriber.Channel, activation: activation, subscriberID: subscriber.ID, token: token}, nil
 }
 
 func (r *Runtime) removeWhenStopped(name string, activation *channelActivation) {
@@ -305,9 +290,6 @@ func (r *Runtime) deactivateActivation(channel string, activation *channelActiva
 	return true
 }
 
-// deactivateIfIdle releases a listener that has no runtime handlers. Durable
-// Channel existence is independent of whether a live Redis SUBSCRIBE listener
-// is useful at this moment.
 func (r *Runtime) deactivateIfIdle(channel string, activation *channelActivation) bool {
 	r.mu.Lock()
 	current, ok := r.active[channel]
@@ -346,11 +328,32 @@ func (r *Runtime) Active(name string) bool {
 	return ok
 }
 
+// Close owns runtime cleanup: all active transport listeners are canceled and
+// bounded delivery workers are drained. Redis client ownership remains with the
+// composition root that supplied the client.
+func (r *Runtime) Close() {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return
+	}
+	r.closed = true
+	activations := make([]*channelActivation, 0, len(r.active))
+	for _, activation := range r.active {
+		activations = append(activations, activation)
+	}
+	r.active = make(map[string]*channelActivation)
+	r.mu.Unlock()
+	for _, activation := range activations {
+		activation.cancel()
+	}
+	r.delivery.close()
+}
+
 func (h *Handle) Ready() <-chan struct{}   { return h.sub.Ready() }
 func (h *Handle) Stopped() <-chan struct{} { return h.sub.Stopped() }
 func (h *Handle) LastError() error         { return h.sub.LastError() }
 func (h *Handle) Close() bool              { return h.runtime.deactivateActivation(h.channel, h.activation) }
-
 func (h *SubscriberHandle) Close() bool {
 	return h.runtime.detachSubscriber(h.channel, h.activation, h.subscriberID, h.token)
 }
