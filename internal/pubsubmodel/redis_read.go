@@ -10,6 +10,17 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+func storedIdentity(kind, requested, stored string) error {
+	stored = normalizeIdentity(stored)
+	if stored == "" {
+		return fmt.Errorf("decode %s %s: stored identity is empty", kind, requested)
+	}
+	if stored != requested {
+		return fmt.Errorf("decode %s %s: stored identity %q does not match requested identity", kind, requested, stored)
+	}
+	return nil
+}
+
 func (s *RedisStore) GetChannel(ctx context.Context, name string) (Channel, error) {
 	name = normalizeIdentity(name)
 	if name == "" {
@@ -22,7 +33,10 @@ func (s *RedisStore) GetChannel(ctx context.Context, name string) (Channel, erro
 	if len(fields) == 0 {
 		return Channel{}, fmt.Errorf("%w: channel %s", ErrNotFound, name)
 	}
-	channel := Channel{Name: fields["name"]}
+	if err := storedIdentity("channel", name, fields["name"]); err != nil {
+		return Channel{}, err
+	}
+	channel := Channel{Name: name}
 	if err := channel.Validate(); err != nil {
 		return Channel{}, fmt.Errorf("decode channel %s: %w", name, err)
 	}
@@ -41,8 +55,11 @@ func (s *RedisStore) GetCallback(ctx context.Context, id string) (Callback, erro
 	if len(fields) == 0 {
 		return Callback{}, fmt.Errorf("%w: callback %s", ErrNotFound, id)
 	}
+	if err := storedIdentity("callback", id, fields["id"]); err != nil {
+		return Callback{}, err
+	}
 
-	callback := Callback{ID: fields["id"], Type: CallbackType(fields["type"])}
+	callback := Callback{ID: id, Type: CallbackType(fields["type"])}
 	switch callback.Type {
 	case CallbackWebhook:
 		urls, err := s.client.SMembers(ctx, s.keys.CallbackURLs(id)).Result()
@@ -72,12 +89,15 @@ func (s *RedisStore) GetSubscriber(ctx context.Context, id string) (Subscriber, 
 	if len(fields) == 0 {
 		return Subscriber{}, fmt.Errorf("%w: subscriber %s", ErrNotFound, id)
 	}
+	if err := storedIdentity("subscriber", id, fields["id"]); err != nil {
+		return Subscriber{}, err
+	}
 	callbacks, err := s.client.SMembers(ctx, s.keys.SubscriberCallbacks(id)).Result()
 	if err != nil {
 		return Subscriber{}, err
 	}
 	sort.Strings(callbacks)
-	subscriber := Subscriber{ID: fields["id"], Channel: fields["channel"], CallbackIDs: callbacks}
+	subscriber := Subscriber{ID: id, Channel: fields["channel"], CallbackIDs: callbacks}
 	if err := subscriber.Validate(); err != nil {
 		return Subscriber{}, fmt.Errorf("decode subscriber %s: %w", id, err)
 	}
@@ -96,7 +116,10 @@ func (s *RedisStore) GetPublisher(ctx context.Context, id string) (Publisher, er
 	if len(fields) == 0 {
 		return Publisher{}, fmt.Errorf("%w: publisher %s", ErrNotFound, id)
 	}
-	publisher := Publisher{ID: fields["id"], Channel: fields["channel"], Type: fields["type"]}
+	if err := storedIdentity("publisher", id, fields["id"]); err != nil {
+		return Publisher{}, err
+	}
+	publisher := Publisher{ID: id, Channel: fields["channel"], Type: fields["type"]}
 	if config := fields["config"]; config != "" {
 		publisher.Config = json.RawMessage(config)
 	}
@@ -118,12 +141,15 @@ func (s *RedisStore) GetSubscriptionGroup(ctx context.Context, id string) (Subsc
 	if len(fields) == 0 {
 		return SubscriptionGroup{}, fmt.Errorf("%w: subscription group %s", ErrNotFound, id)
 	}
+	if err := storedIdentity("subscription group", id, fields["id"]); err != nil {
+		return SubscriptionGroup{}, err
+	}
 	subscribers, err := s.client.SMembers(ctx, s.keys.SubscriptionGroupSubscribers(id)).Result()
 	if err != nil {
 		return SubscriptionGroup{}, err
 	}
 	sort.Strings(subscribers)
-	group := SubscriptionGroup{ID: fields["id"], SubscriberIDs: subscribers}
+	group := SubscriptionGroup{ID: id, SubscriberIDs: subscribers}
 	if err := group.Validate(); err != nil {
 		return SubscriptionGroup{}, fmt.Errorf("decode subscription group %s: %w", id, err)
 	}
