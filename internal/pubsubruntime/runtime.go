@@ -54,6 +54,7 @@ type channelActivation struct {
 	mu        sync.RWMutex
 	nextToken uint64
 	handlers  map[string]handlerEntry
+	leases    int
 }
 
 func (a *channelActivation) dispatch(payload string) {
@@ -95,10 +96,13 @@ func (a *channelActivation) handlerCount() int {
 }
 
 type Handle struct {
-	runtime    *Runtime
-	channel    string
-	activation *channelActivation
-	sub        Subscriber
+	runtime      *Runtime
+	channel      string
+	activation   *channelActivation
+	sub          Subscriber
+	handlerID    string
+	handlerToken uint64
+	once         sync.Once
 }
 
 type SubscriberHandle struct {
@@ -151,9 +155,10 @@ func newWithDependencies(client *redis.Client, store ResourceStore, subscribe su
 	}
 }
 
-// Activate remains a low-level listener-acquisition primitive for compatibility.
-// Normal v2 Subscription activation waits for readiness and attaches a handler;
-// an empty listener is released when no runtime handler needs it.
+// Activate acquires a temporary lease on a shared Channel listener. Callers
+// release that lease with Handle.Close. The listener remains alive while any
+// lease or runtime handler still needs it, so concurrent activation operations
+// cannot tear down one another's empty-but-in-progress listener.
 func (r *Runtime) Activate(ctx context.Context, name string, onMessage func(string)) (*Handle, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -173,21 +178,27 @@ func (r *Runtime) Activate(ctx context.Context, name string, onMessage func(stri
 		return nil, errors.New("runtime is closed")
 	}
 	if activation, ok := r.active[name]; ok {
+		activation.leases++
+		handle := &Handle{runtime: r, channel: name, activation: activation, sub: activation.subscriber}
 		if onMessage != nil {
-			activation.putHandler("__channel__", onMessage)
+			handle.handlerID = "__channel__"
+			handle.handlerToken = activation.putHandler(handle.handlerID, onMessage)
 		}
-		return &Handle{runtime: r, channel: name, activation: activation, sub: activation.subscriber}, nil
+		return handle, nil
 	}
 
 	subCtx, cancel := context.WithCancel(ctx)
-	activation := &channelActivation{ctx: subCtx, cancel: cancel, handlers: make(map[string]handlerEntry)}
+	activation := &channelActivation{ctx: subCtx, cancel: cancel, handlers: make(map[string]handlerEntry), leases: 1}
+	handle := &Handle{runtime: r, channel: name, activation: activation}
 	if onMessage != nil {
-		activation.putHandler("__channel__", onMessage)
+		handle.handlerID = "__channel__"
+		handle.handlerToken = activation.putHandler(handle.handlerID, onMessage)
 	}
 	activation.subscriber = r.subscribe(subCtx, r.client, transportName, activation.dispatch)
+	handle.sub = activation.subscriber
 	r.active[name] = activation
 	go r.removeWhenStopped(name, activation)
-	return &Handle{runtime: r, channel: name, activation: activation, sub: activation.subscriber}, nil
+	return handle, nil
 }
 
 func (r *Runtime) WaitReady(ctx context.Context, name string) error {
@@ -279,29 +290,27 @@ func (r *Runtime) Deactivate(name string) bool {
 	return true
 }
 
-func (r *Runtime) deactivateActivation(channel string, activation *channelActivation) bool {
+func (r *Runtime) releaseHandle(channel string, activation *channelActivation, handlerID string, handlerToken uint64) bool {
 	r.mu.Lock()
 	current, ok := r.active[channel]
 	if !ok || current != activation {
 		r.mu.Unlock()
 		return false
 	}
-	delete(r.active, channel)
-	r.mu.Unlock()
-	activation.cancel()
-	return true
-}
-
-func (r *Runtime) deactivateIfIdle(channel string, activation *channelActivation) bool {
-	r.mu.Lock()
-	current, ok := r.active[channel]
-	if !ok || current != activation || activation.handlerCount() != 0 {
-		r.mu.Unlock()
-		return false
+	if handlerID != "" {
+		activation.removeHandler(handlerID, handlerToken)
 	}
-	delete(r.active, channel)
+	if activation.leases > 0 {
+		activation.leases--
+	}
+	idle := activation.leases == 0 && activation.handlerCount() == 0
+	if idle {
+		delete(r.active, channel)
+	}
 	r.mu.Unlock()
-	activation.cancel()
+	if idle {
+		activation.cancel()
+	}
 	return true
 }
 
@@ -313,11 +322,12 @@ func (r *Runtime) detachSubscriber(channel string, activation *channelActivation
 		return false
 	}
 	removed, remaining := activation.removeHandler(subscriberID, token)
-	if removed && remaining == 0 {
+	idle := removed && remaining == 0 && activation.leases == 0
+	if idle {
 		delete(r.active, channel)
 	}
 	r.mu.Unlock()
-	if removed && remaining == 0 {
+	if idle {
 		activation.cancel()
 	}
 	return removed
@@ -355,7 +365,13 @@ func (r *Runtime) Close() {
 func (h *Handle) Ready() <-chan struct{}   { return h.sub.Ready() }
 func (h *Handle) Stopped() <-chan struct{} { return h.sub.Stopped() }
 func (h *Handle) LastError() error         { return h.sub.LastError() }
-func (h *Handle) Close() bool              { return h.runtime.deactivateActivation(h.channel, h.activation) }
+func (h *Handle) Close() bool {
+	released := false
+	h.once.Do(func() {
+		released = h.runtime.releaseHandle(h.channel, h.activation, h.handlerID, h.handlerToken)
+	})
+	return released
+}
 func (h *SubscriberHandle) Close() bool {
 	h.cancel()
 	return h.runtime.detachSubscriber(h.channel, h.activation, h.subscriberID, h.token)
