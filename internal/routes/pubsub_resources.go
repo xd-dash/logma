@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"os"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -26,9 +25,7 @@ type pubSubResourceAPI struct {
 }
 
 func newPubSubResourceAPI() *pubSubResourceAPI {
-	return &pubSubResourceAPI{store: func() (pubSubResourceStore, error) {
-		return pubsubmodel.NewRedisStore(client, os.Getenv("FATLINE_SCOPE"))
-	}}
+	return &pubSubResourceAPI{store: newPubSubResourceRedisStore}
 }
 
 // NewPubSubResourceRouter exposes the additive resource API independently of
