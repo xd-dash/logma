@@ -139,11 +139,11 @@ func NewScoped(client *redis.Client, store ResourceStore, scope string) (*Runtim
 
 func newWithDependencies(client *redis.Client, store ResourceStore, subscribe subscribeFunc, sendWebhook webhookSender) *Runtime {
 	return &Runtime{
-		client:     client,
-		store:      store,
-		subscribe:  subscribe,
-		delivery:   newDeliveryDispatcher(sendWebhook),
-		active:     make(map[string]*channelActivation),
+		client:    client,
+		store:     store,
+		subscribe: subscribe,
+		delivery:  newDeliveryDispatcher(sendWebhook),
+		active:    make(map[string]*channelActivation),
 		transportAddress: func(channel string) (string, error) {
 			return channel, nil
 		},
