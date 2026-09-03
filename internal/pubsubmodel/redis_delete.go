@@ -18,13 +18,6 @@ func (s *RedisStore) DeleteSubscriber(ctx context.Context, id string) error {
 	callbacksKey := s.keys.SubscriberCallbacks(id)
 	groupsKey := s.keys.SubscriberGroups(id)
 	return s.watch(ctx, func(tx *redis.Tx) error {
-		groups, err := tx.SCard(ctx, groupsKey).Result()
-		if err != nil {
-			return err
-		}
-		if groups != 0 {
-			return fmt.Errorf("%w: subscriber %s belongs to subscription groups", ErrReferenced, id)
-		}
 		channel, err := tx.HGet(ctx, subscriberKey, "channel").Result()
 		if err == redis.Nil {
 			_, cleanupErr := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
@@ -56,8 +49,10 @@ func (s *RedisStore) DeleteSubscriber(ctx context.Context, id string) error {
 	}, subscriberKey, callbacksKey, groupsKey)
 }
 
-// DeletePublisher removes a Publisher only when no PublisherGroup still
-// references it, then reconciles the Channel reverse edge and discovery index.
+// DeletePublisher removes a Publisher and reconciles its Channel reverse edge
+// and discovery index. Weak PublisherGroup membership does not block deletion;
+// group declarations intentionally retain the Publisher identity for later
+// best-effort resolution.
 func (s *RedisStore) DeletePublisher(ctx context.Context, id string) error {
 	id = normalizeIdentity(id)
 	if id == "" {
@@ -66,13 +61,6 @@ func (s *RedisStore) DeletePublisher(ctx context.Context, id string) error {
 	publisherKey := s.keys.Publisher(id)
 	groupsKey := s.keys.PublisherGroupsForPublisher(id)
 	return s.watch(ctx, func(tx *redis.Tx) error {
-		groups, err := tx.SCard(ctx, groupsKey).Result()
-		if err != nil {
-			return err
-		}
-		if groups != 0 {
-			return fmt.Errorf("%w: publisher %s belongs to publisher groups", ErrReferenced, id)
-		}
 		channel, err := tx.HGet(ctx, publisherKey, "channel").Result()
 		if err == redis.Nil {
 			_, cleanupErr := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
@@ -156,23 +144,12 @@ func (s *RedisStore) DeleteSubscriptionGroup(ctx context.Context, id string) err
 	if id == "" {
 		return errors.New("subscription group id is required")
 	}
-	groupKey := s.keys.SubscriptionGroup(id)
-	membersKey := s.keys.SubscriptionGroupSubscribers(id)
-	return s.watch(ctx, func(tx *redis.Tx) error {
-		members, err := tx.SMembers(ctx, membersKey).Result()
-		if err != nil {
-			return err
-		}
-		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-			pipe.Del(ctx, groupKey, membersKey)
-			pipe.SRem(ctx, s.keys.SubscriptionGroups(), id)
-			for _, subscriberID := range members {
-				pipe.SRem(ctx, s.keys.SubscriberGroups(subscriberID), id)
-			}
-			return nil
-		})
-		return err
-	}, groupKey, membersKey)
+	_, err := s.client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+		pipe.Del(ctx, s.keys.SubscriptionGroup(id), s.keys.SubscriptionGroupSubscribers(id))
+		pipe.SRem(ctx, s.keys.SubscriptionGroups(), id)
+		return nil
+	})
+	return err
 }
 
 func normalizeIdentity(value string) string {
