@@ -18,7 +18,8 @@ const (
 type Capability string
 
 const (
-	CapabilityLogmaPubSubGraph Capability = "logma.pubsub.graph"
+	CapabilityLogmaPubSubGraph     Capability = "logma.pubsub.graph"
+	CapabilityLogmaPubSubTransport Capability = "logma.pubsub.transport"
 )
 
 // Grant is one semantic capability assignment.
@@ -44,23 +45,31 @@ func CompileRedisRequirements(scope Scope, grants ...Grant) (RedisRequirements, 
 	}
 	var out RedisRequirements
 	for _, grant := range grants {
+		var req RedisRequirements
+		var err error
 		switch grant.Capability {
 		case CapabilityLogmaPubSubGraph:
-			req, err := logmaPubSubGraphRequirements(scope, grant.Access)
-			if err != nil {
-				return RedisRequirements{}, err
-			}
-			out.KeyPatterns = append(out.KeyPatterns, req.KeyPatterns...)
-			out.ChannelPatterns = append(out.ChannelPatterns, req.ChannelPatterns...)
-			out.Commands = append(out.Commands, req.Commands...)
+			req, err = logmaPubSubGraphRequirements(scope, grant.Access)
+		case CapabilityLogmaPubSubTransport:
+			req, err = logmaPubSubTransportRequirements(scope, grant.Access)
 		default:
 			return RedisRequirements{}, fmt.Errorf("unsupported Redis capability %q", grant.Capability)
 		}
+		if err != nil {
+			return RedisRequirements{}, err
+		}
+		out.KeyPatterns = append(out.KeyPatterns, req.KeyPatterns...)
+		out.ChannelPatterns = append(out.ChannelPatterns, req.ChannelPatterns...)
+		out.Commands = append(out.Commands, req.Commands...)
 	}
 	out.KeyPatterns = unique(out.KeyPatterns)
 	out.ChannelPatterns = unique(out.ChannelPatterns)
 	out.Commands = unique(out.Commands)
 	return out, nil
+}
+
+func baseRedisCommands() []string {
+	return []string{"ping", "hello", "client"}
 }
 
 func logmaPubSubGraphRequirements(scope Scope, access Access) (RedisRequirements, error) {
@@ -71,11 +80,10 @@ func logmaPubSubGraphRequirements(scope Scope, access Access) (RedisRequirements
 	if err != nil {
 		return RedisRequirements{}, err
 	}
-	req := RedisRequirements{KeyPatterns: []string{family.KeyPattern()}}
-
-	// Connection/introspection commands are explicit rather than inherited from
-	// broad Redis command categories.
-	req.Commands = append(req.Commands, "ping", "hello", "client")
+	req := RedisRequirements{
+		KeyPatterns: []string{family.KeyPattern()},
+		Commands:    baseRedisCommands(),
+	}
 
 	if access&AccessRead != 0 {
 		req.Commands = append(req.Commands,
@@ -84,11 +92,10 @@ func logmaPubSubGraphRequirements(scope Scope, access Access) (RedisRequirements
 		)
 	}
 	if access&AccessWrite != 0 {
-		// Mutation authority must be self-sufficient. Subscriber/publisher/group
-		// reconciliation and guarded deletes read the existing graph as part of
-		// optimistic WATCH transactions, including SCARD reference checks. These
-		// reads are implementation prerequisites for mutation, not a semantic
-		// grant to the independent read API.
+		// Mutation authority must be self-sufficient. Subscriber/publisher
+		// reconciliation and guarded deletes read existing graph state as part
+		// of optimistic WATCH transactions. These reads are provider
+		// prerequisites, not an independent semantic Read grant.
 		req.Commands = append(req.Commands,
 			"hset", "hdel",
 			"sadd", "srem",
@@ -96,6 +103,27 @@ func logmaPubSubGraphRequirements(scope Scope, access Access) (RedisRequirements
 			"watch", "unwatch", "multi", "exec", "discard",
 			"exists", "hget", "smembers", "scard",
 		)
+	}
+	return req, nil
+}
+
+func logmaPubSubTransportRequirements(scope Scope, access Access) (RedisRequirements, error) {
+	if access == 0 || access&^(AccessPublish|AccessSubscribe) != 0 {
+		return RedisRequirements{}, fmt.Errorf("logma Pub/Sub transport supports publish/subscribe access only")
+	}
+	family, err := LogmaPubSubTransportFamily(scope)
+	if err != nil {
+		return RedisRequirements{}, err
+	}
+	req := RedisRequirements{
+		ChannelPatterns: []string{family.ChannelPattern()},
+		Commands:        baseRedisCommands(),
+	}
+	if access&AccessPublish != 0 {
+		req.Commands = append(req.Commands, "publish")
+	}
+	if access&AccessSubscribe != 0 {
+		req.Commands = append(req.Commands, "subscribe", "unsubscribe")
 	}
 	return req, nil
 }
