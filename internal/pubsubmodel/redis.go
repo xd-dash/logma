@@ -310,7 +310,7 @@ func (s *RedisStore) PutSubscriptionGroup(ctx context.Context, group Subscriptio
 			}
 		}
 
-		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+		_, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 			pipe.HSet(ctx, groupKey, map[string]any{"id": id})
 			pipe.Del(ctx, membersKey)
 			if len(subscribers) > 0 {
