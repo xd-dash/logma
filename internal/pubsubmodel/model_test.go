@@ -1,6 +1,9 @@
 package pubsubmodel
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestChannelAllowsNoSubscriber(t *testing.T) {
 	channel := Channel{Name: "dev:news:items"}
@@ -126,12 +129,19 @@ func TestSubscriptionGroupRejectsEmptySubscriberIdentity(t *testing.T) {
 }
 
 func TestPublisherAndServerlessEndpointAreIndependentResources(t *testing.T) {
-	publisher := Publisher{ID: "news", Channel: "dev:news:items", Type: "xd-dash/news"}
+	publisher := Publisher{ID: "news", Channel: "dev:news:items", Type: "xd-dash/news", Config: json.RawMessage(`{"source":"wire"}`)}
 	if err := publisher.Validate(); err != nil {
 		t.Fatalf("publisher should be valid: %v", err)
 	}
 	endpoint := ServerlessEndpoint{ID: "events", Type: "sse", Path: "/events"}
 	if err := endpoint.Validate(); err != nil {
 		t.Fatalf("serverless endpoint should be valid: %v", err)
+	}
+}
+
+func TestPublisherRejectsInvalidOpaqueJSON(t *testing.T) {
+	publisher := Publisher{ID: "news", Channel: "dev:news:items", Type: "xd-dash/news", Config: json.RawMessage(`{"broken":`)}
+	if err := publisher.Validate(); err == nil {
+		t.Fatal("publisher with invalid JSON config should be invalid")
 	}
 }
