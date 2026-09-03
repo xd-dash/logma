@@ -171,7 +171,7 @@ func TestSimpleGroupRuntimeRequiresExplicitAuthority(t *testing.T) {
 	}
 }
 
-func TestSimplePubSubStateUsesOperatorVocabulary(t *testing.T) {
+func TestSimplePubSubStateUsesOnlyOperatorVocabulary(t *testing.T) {
 	store := newFakePubSubResourceStore()
 	store.channels["market"] = pubsubmodel.Channel{Name: "market"}
 	store.subscribers["screen"] = pubsubmodel.Subscriber{ID: "screen", Channel: "market", CallbackIDs: []string{"hook"}}
@@ -190,9 +190,12 @@ func TestSimplePubSubStateUsesOperatorVocabulary(t *testing.T) {
 	if resp.Code != http.StatusOK {
 		t.Fatalf("GET /state status=%d body=%s", resp.Code, resp.Body.String())
 	}
-	for _, want := range []string{`"channels":["market"]`, `"subscriptions":["screen"]`, `"publishers":["stonks"]`, `"groups":["morning"]`, `"publisherGroups":["feeds"]`} {
+	for _, want := range []string{`"channels":["market"]`, `"subscriptions":["screen"]`, `"publishers":["stonks"]`, `"groups":["morning"]`} {
 		if !strings.Contains(resp.Body.String(), want) {
 			t.Fatalf("GET /state missing %s in %s", want, resp.Body.String())
 		}
+	}
+	if strings.Contains(resp.Body.String(), "publisherGroups") || strings.Contains(resp.Body.String(), "feeds") {
+		t.Fatalf("GET /state leaked advanced PublisherGroup state: %s", resp.Body.String())
 	}
 }
