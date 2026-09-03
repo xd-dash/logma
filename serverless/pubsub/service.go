@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync/atomic"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -17,8 +18,12 @@ func (cp ControlPlane) SubscribeAll(ctx context.Context, handlers ChannelHandler
 	subs := make([]*Subscriber, 0, len(handlers)*2)
 	for baseChannel, onMessage := range handlers {
 		instance, relay := cp.Subscribe(ctx, baseChannel, onMessage)
-		if instance != nil { subs = append(subs, instance) }
-		if relay != nil { subs = append(subs, relay) }
+		if instance != nil {
+			subs = append(subs, instance)
+		}
+		if relay != nil {
+			subs = append(subs, relay)
+		}
 	}
 	return func() {
 		for _, s := range subs {
@@ -65,7 +70,7 @@ type Runtime struct {
 	invocation   InvocationInfo
 	spec         ServiceSpec
 	redisFromEnv bool
-	lifecycle    *lifecycleGuard
+	lifecycle    atomic.Pointer[lifecycleGuard]
 }
 
 func NewRuntime(client *redis.Client) Runtime { return newRuntime(client, false) }
@@ -105,12 +110,15 @@ func (sr *Runtime) ConfigureDefaultWithLifecycle(policy Policy, work func(ctx co
 
 func (sr *Runtime) observabilityBase(phase, status string) ObservabilityEvent {
 	namespace := sr.Namespace
-	if namespace == "" { namespace = sr.invocation.Service }
+	if namespace == "" {
+		namespace = sr.invocation.Service
+	}
 	return ObservabilityEvent{Kind: "fatline", Phase: phase, Status: status, Namespace: namespace, InstanceID: sr.InstanceID, RequestID: sr.invocation.RequestID, Policy: string(sr.spec.Lifecycle)}
 }
 
 func (sr *Runtime) Publish(channel string, event any) error {
-	exhausted, err := sr.lifecycle.admitPublish(sr.Context())
+	guard := sr.lifecycle.Load()
+	exhausted, err := guard.admitPublish(sr.Context())
 	if err != nil {
 		observed := sr.observabilityBase("publish_admission", "denied")
 		observed.Channel = channel
@@ -119,21 +127,30 @@ func (sr *Runtime) Publish(channel string, event any) error {
 		return err
 	}
 	data, err := json.Marshal(event)
-	if err != nil { return fmt.Errorf("marshal %T for %s: %w", event, channel, err) }
+	if err != nil {
+		return fmt.Errorf("marshal %T for %s: %w", event, channel, err)
+	}
 	publishErr := sr.Client.Publish(sr.Context(), channel, data).Err()
-	sr.lifecycle.afterPublish(exhausted)
+	guard.afterPublish(exhausted)
 	observed := sr.observabilityBase("publish", "published")
 	observed.Channel = channel
 	observed.Payload = append(json.RawMessage(nil), data...)
-	if publishErr != nil { observed.Status = "failed"; observed.Reason = "redis_publish_failed" }
+	if publishErr != nil {
+		observed.Status = "failed"
+		observed.Reason = "redis_publish_failed"
+	}
 	observe(sr.spec.Observer, sr.Context(), observed)
-	if publishErr != nil { return fmt.Errorf("publish to %s: %w", channel, publishErr) }
+	if publishErr != nil {
+		return fmt.Errorf("publish to %s: %w", channel, publishErr)
+	}
 	return nil
 }
 
 func (sr *Runtime) DefaultShutdownHandler() func(payload string) {
 	label := sr.Namespace
-	if label == "" { label = "service" }
+	if label == "" {
+		label = "service"
+	}
 	return func(payload string) {
 		request := ParseShutdownRequest(payload)
 		observed := sr.observabilityBase("shutdown_signal", "received")
@@ -149,13 +166,21 @@ func (sr *Runtime) Start(ctx context.Context) {
 		spec := sr.spec
 		spec.Invocation = sr.invocation
 		work := spec.Work
-		if work == nil { log.Printf("pubsub: service work is nil"); return }
+		if work == nil {
+			log.Printf("pubsub: service work is nil")
+			return
+		}
 		observe(spec.Observer, sr.Context(), sr.observabilityBase("runtime", "starting"))
 		spec.Work = func(runCtx context.Context) error {
 			guard, err := newLifecycleGuard(runCtx, sr.Client, sr.Cancel, sr.ControlPlane, spec.Invocation, spec.Lifecycle, spec.Observer)
-			if err != nil { return err }
-			sr.lifecycle = guard
-			defer func() { guard.close(); sr.lifecycle = nil }()
+			if err != nil {
+				return err
+			}
+			sr.lifecycle.Store(guard)
+			defer func() {
+				guard.close()
+				sr.lifecycle.CompareAndSwap(guard, nil)
+			}()
 			return work(runCtx)
 		}
 		if err := sr.ControlPlane.Run(sr.Context(), spec); err != nil {

@@ -27,6 +27,7 @@ func main() {
 
 	router := chi.NewRouter()
 	router.Mount("/lifecycle", lifecycleRouter)
+	router.Handle("/pubsub/*", routes.NewPubSubResourceRouter())
 	router.Mount("/", routes.NewRouter())
 
 	port := getPortFromArgs()

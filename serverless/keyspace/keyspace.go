@@ -80,7 +80,7 @@ func (s Scope) ChannelPattern() string { return "&" + clean(string(s)) + ":*" }
 // that legitimately need several package-owned capabilities (for example News
 // publication plus Logma runtime records plus ratelimiter lifecycle state).
 type Worker struct {
-	Scope      Scope
+	Scope     Scope
 	Subsystem string
 }
 
@@ -108,7 +108,9 @@ type Profile struct {
 }
 
 func (p Profile) Validate() error {
-	if _, err := ParseScope(string(p.Scope)); err != nil { return err }
+	if _, err := ParseScope(string(p.Scope)); err != nil {
+		return err
+	}
 	for _, capability := range append(append([]string{}, p.KeySubsystems...), p.ChannelSubsystems...) {
 		if !validCapability(capability) {
 			return fmt.Errorf("invalid worker capability %q", capability)
@@ -127,7 +129,9 @@ func unique(values []string) []string {
 	out := make([]string, 0, len(values))
 	for _, value := range values {
 		value = strings.TrimSpace(value)
-		if _, ok := seen[value]; ok { continue }
+		if _, ok := seen[value]; ok {
+			continue
+		}
 		seen[value] = struct{}{}
 		out = append(out, value)
 	}
@@ -138,15 +142,19 @@ func unique(values []string) []string {
 // a complete runtime ACL so command permissions cannot silently drift from the
 // package-owned worker profile.
 func (p Profile) ACLPatterns() ([]string, error) {
-	if err := p.Validate(); err != nil { return nil, err }
+	if err := p.Validate(); err != nil {
+		return nil, err
+	}
 	patterns := make([]string, 0, len(p.KeySubsystems)+len(p.ChannelSubsystems)+1)
 	for _, subsystem := range unique(p.KeySubsystems) {
-		patterns = append(patterns, Worker{Scope:p.Scope, Subsystem:subsystem}.KeyPattern())
+		patterns = append(patterns, Worker{Scope: p.Scope, Subsystem: subsystem}.KeyPattern())
 	}
 	for _, subsystem := range unique(p.ChannelSubsystems) {
-		patterns = append(patterns, Worker{Scope:p.Scope, Subsystem:subsystem}.ChannelPattern())
+		patterns = append(patterns, Worker{Scope: p.Scope, Subsystem: subsystem}.ChannelPattern())
 	}
-	if p.AllowGlobalRelay { patterns = append(patterns, "&global:*") }
+	if p.AllowGlobalRelay {
+		patterns = append(patterns, "&global:*")
+	}
 	return patterns, nil
 }
 
@@ -155,7 +163,9 @@ func (p Profile) ACLPatterns() ([]string, error) {
 // authority implicitly.
 func (p Profile) ACLRules() ([]string, error) {
 	patterns, err := p.ACLPatterns()
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	rules := append([]string{}, patterns...)
 	for _, command := range unique(p.Commands) {
 		rules = append(rules, "+"+command)
@@ -170,8 +180,8 @@ func (p Profile) ACLRules() ([]string, error) {
 // listed explicitly as well as FCALL itself.
 func NewsProfile(scope Scope) Profile {
 	return Profile{
-		Scope: scope,
-		KeySubsystems: []string{"logma", "ratelimiter"},
+		Scope:             scope,
+		KeySubsystems:     []string{"logma", "ratelimiter"},
 		ChannelSubsystems: []string{"news"},
 		Commands: []string{
 			"ping", "hello", "client",
