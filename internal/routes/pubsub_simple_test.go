@@ -42,7 +42,7 @@ func simpleTestRouter(t *testing.T, store *fakePubSubResourceStore) http.Handler
 	return newSimplePubSubRouter(api)
 }
 
-func simpleTestRouterWithController(t *testing.T, store *fakePubSubResourceStore, controller simpleSubscriptionController) http.Handler {
+func simpleTestRouterWithController(t *testing.T, store *fakePubSubResourceStore, controller SubscriptionController) http.Handler {
 	t.Helper()
 	t.Setenv("API_KEY", "test-api-key")
 	api := &simplePubSubAPI{
