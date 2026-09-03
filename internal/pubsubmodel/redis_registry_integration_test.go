@@ -52,9 +52,9 @@ func TestRedisStoreResourceRegistries(t *testing.T) {
 		t.Fatalf("put subscriber: %v", err)
 	}
 
-	assertRegistryIDs(t, store.ChannelIDs(ctx), []string{channelA.Name, channelB.Name})
-	assertRegistryIDs(t, store.CallbackIDs(ctx), []string{callbackA.ID, callbackB.ID})
-	assertRegistryIDs(t, store.SubscriberIDs(ctx), []string{subscriber.ID})
+	assertRegistryIDs(t, []string{channelA.Name, channelB.Name}, store.ChannelIDs(ctx))
+	assertRegistryIDs(t, []string{callbackA.ID, callbackB.ID}, store.CallbackIDs(ctx))
+	assertRegistryIDs(t, []string{subscriber.ID}, store.SubscriberIDs(ctx))
 	assertSet(t, ctx, client, keys.Channels(), []string{channelA.Name, channelB.Name})
 	assertSet(t, ctx, client, keys.Callbacks(), []string{callbackA.ID, callbackB.ID})
 	assertSet(t, ctx, client, keys.Subscribers(), []string{subscriber.ID})
@@ -68,9 +68,9 @@ func TestRedisStoreResourceRegistries(t *testing.T) {
 	if err := store.PutSubscriber(ctx, subscriber); err != nil {
 		t.Fatalf("repeat put subscriber: %v", err)
 	}
-	assertRegistryIDs(t, store.ChannelIDs(ctx), []string{channelA.Name, channelB.Name})
-	assertRegistryIDs(t, store.CallbackIDs(ctx), []string{callbackA.ID, callbackB.ID})
-	assertRegistryIDs(t, store.SubscriberIDs(ctx), []string{subscriber.ID})
+	assertRegistryIDs(t, []string{channelA.Name, channelB.Name}, store.ChannelIDs(ctx))
+	assertRegistryIDs(t, []string{callbackA.ID, callbackB.ID}, store.CallbackIDs(ctx))
+	assertRegistryIDs(t, []string{subscriber.ID}, store.SubscriberIDs(ctx))
 
 	if err := store.DeleteCallback(ctx, callbackA.ID); err == nil {
 		t.Fatal("DeleteCallback succeeded while callback remained referenced")
@@ -78,13 +78,13 @@ func TestRedisStoreResourceRegistries(t *testing.T) {
 	if err := store.DeleteChannel(ctx, channelA.Name); err == nil {
 		t.Fatal("DeleteChannel succeeded while channel remained referenced")
 	}
-	assertRegistryIDs(t, store.ChannelIDs(ctx), []string{channelA.Name, channelB.Name})
-	assertRegistryIDs(t, store.CallbackIDs(ctx), []string{callbackA.ID, callbackB.ID})
+	assertRegistryIDs(t, []string{channelA.Name, channelB.Name}, store.ChannelIDs(ctx))
+	assertRegistryIDs(t, []string{callbackA.ID, callbackB.ID}, store.CallbackIDs(ctx))
 
 	if err := store.DeleteSubscriber(ctx, subscriber.ID); err != nil {
 		t.Fatalf("delete subscriber: %v", err)
 	}
-	assertRegistryIDs(t, store.SubscriberIDs(ctx), nil)
+	assertRegistryIDs(t, nil, store.SubscriberIDs(ctx))
 	if err := store.DeleteCallback(ctx, callbackA.ID); err != nil {
 		t.Fatalf("delete callback A: %v", err)
 	}
@@ -97,8 +97,8 @@ func TestRedisStoreResourceRegistries(t *testing.T) {
 	if err := store.DeleteChannel(ctx, channelB.Name); err != nil {
 		t.Fatalf("delete channel B: %v", err)
 	}
-	assertRegistryIDs(t, store.ChannelIDs(ctx), nil)
-	assertRegistryIDs(t, store.CallbackIDs(ctx), nil)
+	assertRegistryIDs(t, nil, store.ChannelIDs(ctx))
+	assertRegistryIDs(t, nil, store.CallbackIDs(ctx))
 
 	remaining, err := scanKeys(ctx, client, scope+":logma:pubsub:*")
 	if err != nil {
@@ -109,7 +109,7 @@ func TestRedisStoreResourceRegistries(t *testing.T) {
 	}
 }
 
-func assertRegistryIDs(t *testing.T, got []string, err error, want []string) {
+func assertRegistryIDs(t *testing.T, want []string, got []string, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatal(err)
