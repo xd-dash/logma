@@ -3,6 +3,7 @@ package pubsubruntime
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/redis/go-redis/v9"
@@ -10,7 +11,9 @@ import (
 )
 
 type fakeStore struct {
-	channels map[string]pubsubmodel.Channel
+	channels    map[string]pubsubmodel.Channel
+	subscribers map[string]pubsubmodel.Subscriber
+	callbacks   map[string]pubsubmodel.Callback
 }
 
 func (s fakeStore) GetChannel(_ context.Context, name string) (pubsubmodel.Channel, error) {
@@ -19,6 +22,22 @@ func (s fakeStore) GetChannel(_ context.Context, name string) (pubsubmodel.Chann
 		return pubsubmodel.Channel{}, pubsubmodel.ErrNotFound
 	}
 	return channel, nil
+}
+
+func (s fakeStore) GetSubscriber(_ context.Context, id string) (pubsubmodel.Subscriber, error) {
+	subscriber, ok := s.subscribers[id]
+	if !ok {
+		return pubsubmodel.Subscriber{}, pubsubmodel.ErrNotFound
+	}
+	return subscriber, nil
+}
+
+func (s fakeStore) GetCallback(_ context.Context, id string) (pubsubmodel.Callback, error) {
+	callback, ok := s.callbacks[id]
+	if !ok {
+		return pubsubmodel.Callback{}, pubsubmodel.ErrNotFound
+	}
+	return callback, nil
 }
 
 type fakeSubscriber struct {
@@ -47,7 +66,7 @@ func TestRuntimeActivatesPersistedChannelWithoutCallback(t *testing.T) {
 	var calls int
 	var gotHandler func(string)
 	var sub *fakeSubscriber
-	runtime := newWithSubscriber(client, store, func(_ context.Context, _ *redis.Client, channel string, onMessage func(string)) Subscriber {
+	runtime := newWithDependencies(client, store, func(_ context.Context, _ *redis.Client, channel string, onMessage func(string)) Subscriber {
 		calls++
 		if channel != "events" {
 			t.Fatalf("subscribe channel = %q", channel)
@@ -55,7 +74,7 @@ func TestRuntimeActivatesPersistedChannelWithoutCallback(t *testing.T) {
 		gotHandler = onMessage
 		sub = newFakeSubscriber()
 		return sub
-	})
+	}, func(context.Context, string, string) error { return nil })
 
 	handle, err := runtime.Activate(context.Background(), " events ", nil)
 	if err != nil {
@@ -68,7 +87,7 @@ func TestRuntimeActivatesPersistedChannelWithoutCallback(t *testing.T) {
 		t.Fatal("channel is not active")
 	}
 	if gotHandler == nil {
-		t.Fatal("nil callback was not normalized to a no-op handler")
+		t.Fatal("runtime did not install a Channel dispatcher")
 	}
 	gotHandler("payload")
 
@@ -96,13 +115,89 @@ func TestRuntimeActivatesPersistedChannelWithoutCallback(t *testing.T) {
 	close(sub.stopped)
 }
 
+func TestRuntimeAttachesWebhookSubscriberToActiveChannel(t *testing.T) {
+	store := fakeStore{
+		channels: map[string]pubsubmodel.Channel{"events": {Name: "events"}},
+		subscribers: map[string]pubsubmodel.Subscriber{
+			"sub-a": {ID: "sub-a", Channel: "events", CallbackIDs: []string{"callback-a"}},
+		},
+		callbacks: map[string]pubsubmodel.Callback{
+			"callback-a": {
+				ID:   "callback-a",
+				Type: pubsubmodel.CallbackWebhook,
+				Webhook: &pubsubmodel.WebhookCallback{CallbackURLs: []string{
+					"https://one.example/callback",
+					"https://two.example/callback",
+				}},
+			},
+		},
+	}
+	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:0"})
+	t.Cleanup(func() { _ = client.Close() })
+
+	var dispatch func(string)
+	var delivered []string
+	runtime := newWithDependencies(client, store, func(_ context.Context, _ *redis.Client, _ string, onMessage func(string)) Subscriber {
+		dispatch = onMessage
+		return newFakeSubscriber()
+	}, func(_ context.Context, url, payload string) error {
+		delivered = append(delivered, url+"|"+payload)
+		return nil
+	})
+
+	if _, err := runtime.Activate(context.Background(), "events", nil); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+	handle, err := runtime.AttachSubscriber(context.Background(), "sub-a")
+	if err != nil {
+		t.Fatalf("AttachSubscriber: %v", err)
+	}
+	dispatch(`{"probe":"first"}`)
+	want := []string{
+		`https://one.example/callback|{"probe":"first"}`,
+		`https://two.example/callback|{"probe":"first"}`,
+	}
+	if !reflect.DeepEqual(delivered, want) {
+		t.Fatalf("deliveries = %#v, want %#v", delivered, want)
+	}
+
+	if !handle.Close() {
+		t.Fatal("Subscriber Close did not detach delivery")
+	}
+	dispatch(`{"probe":"second"}`)
+	if !reflect.DeepEqual(delivered, want) {
+		t.Fatalf("detached Subscriber received delivery: %#v", delivered)
+	}
+}
+
+func TestRuntimeRequiresActiveChannelForSubscriber(t *testing.T) {
+	store := fakeStore{
+		subscribers: map[string]pubsubmodel.Subscriber{
+			"sub-a": {ID: "sub-a", Channel: "events", CallbackIDs: []string{"callback-a"}},
+		},
+		callbacks: map[string]pubsubmodel.Callback{
+			"callback-a": {ID: "callback-a", Type: pubsubmodel.CallbackWebhook, Webhook: &pubsubmodel.WebhookCallback{CallbackURL: "https://one.example/callback"}},
+		},
+	}
+	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:0"})
+	t.Cleanup(func() { _ = client.Close() })
+	runtime := newWithDependencies(client, store, func(context.Context, *redis.Client, string, func(string)) Subscriber {
+		t.Fatal("Redis listener should not start")
+		return nil
+	}, func(context.Context, string, string) error { return nil })
+
+	if _, err := runtime.AttachSubscriber(context.Background(), "sub-a"); err == nil {
+		t.Fatal("AttachSubscriber accepted inactive Channel")
+	}
+}
+
 func TestRuntimeRequiresPersistedChannel(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:0"})
 	t.Cleanup(func() { _ = client.Close() })
-	runtime := newWithSubscriber(client, fakeStore{channels: map[string]pubsubmodel.Channel{}}, func(context.Context, *redis.Client, string, func(string)) Subscriber {
+	runtime := newWithDependencies(client, fakeStore{channels: map[string]pubsubmodel.Channel{}}, func(context.Context, *redis.Client, string, func(string)) Subscriber {
 		t.Fatal("subscriber started for missing Channel")
 		return nil
-	})
+	}, func(context.Context, string, string) error { return nil })
 
 	_, err := runtime.Activate(context.Background(), "missing", nil)
 	if !errors.Is(err, pubsubmodel.ErrNotFound) {
@@ -113,10 +208,10 @@ func TestRuntimeRequiresPersistedChannel(t *testing.T) {
 func TestRuntimeRejectsEmptyChannel(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:0"})
 	t.Cleanup(func() { _ = client.Close() })
-	runtime := newWithSubscriber(client, fakeStore{}, func(context.Context, *redis.Client, string, func(string)) Subscriber {
+	runtime := newWithDependencies(client, fakeStore{}, func(context.Context, *redis.Client, string, func(string)) Subscriber {
 		t.Fatal("subscriber started for empty Channel")
 		return nil
-	})
+	}, func(context.Context, string, string) error { return nil })
 
 	if _, err := runtime.Activate(context.Background(), "  ", nil); err == nil {
 		t.Fatal("Activate accepted empty channel")
