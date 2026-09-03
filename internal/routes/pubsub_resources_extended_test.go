@@ -113,6 +113,16 @@ func (s *fakePubSubResourceStore) DeletePublisherGroup(_ context.Context, id str
 	return nil
 }
 
+type fakePublisherReconciler struct {
+	id  string
+	err error
+}
+
+func (r *fakePublisherReconciler) Reconcile(_ context.Context, id string) error {
+	r.id = id
+	return r.err
+}
+
 func TestPubSubResourceAPIPublisherAndGroups(t *testing.T) {
 	store := newFakePubSubResourceStore()
 	router := resourceTestRouter(t, store)
@@ -140,5 +150,29 @@ func TestPubSubResourceAPIPublisherAndGroups(t *testing.T) {
 	resp = requestResource(t, router, http.MethodGet, "/pubsub/publisher-groups/market-producers", "")
 	if resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), "stonks-live") {
 		t.Fatalf("GET PublisherGroup status=%d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestPublisherReconcileRouteRequiresExplicitComposition(t *testing.T) {
+	store := newFakePubSubResourceStore()
+
+	withoutReconciler := resourceTestRouter(t, store)
+	resp := requestResource(t, withoutReconciler, http.MethodPost, "/pubsub/publishers/stonks-live/reconcile", "")
+	if resp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unconfigured reconcile status=%d body=%s", resp.Code, resp.Body.String())
+	}
+
+	reconciler := &fakePublisherReconciler{}
+	api := &pubSubResourceAPI{
+		store: func() (pubSubResourceStore, error) { return store, nil },
+		reconciler: reconciler,
+	}
+	configured := newPubSubResourceRouter(api)
+	resp = requestResource(t, configured, http.MethodPost, "/pubsub/publishers/stonks-live/reconcile", "")
+	if resp.Code != http.StatusNoContent {
+		t.Fatalf("configured reconcile status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if reconciler.id != "stonks-live" {
+		t.Fatalf("reconciled publisher id=%q want stonks-live", reconciler.id)
 	}
 }
