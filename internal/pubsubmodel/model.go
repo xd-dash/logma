@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -40,7 +41,7 @@ type Callback struct {
 // WebhookCallback preserves the historical Logma ability for one callback
 // definition to fan out to one or many HTTP endpoints. CallbackURL is the
 // compatibility/single-target form; CallbackURLs is the multi-target form.
-// At least one non-empty target is required.
+// At least one non-empty HTTP(S) target is required.
 type WebhookCallback struct {
 	CallbackURL  string   `json:"callbackURL,omitempty"`
 	CallbackURLs []string `json:"callbackURLs,omitempty"`
@@ -48,15 +49,23 @@ type WebhookCallback struct {
 
 func (w WebhookCallback) URLs() []string {
 	urls := make([]string, 0, 1+len(w.CallbackURLs))
-	if url := strings.TrimSpace(w.CallbackURL); url != "" {
-		urls = append(urls, url)
+	if target := strings.TrimSpace(w.CallbackURL); target != "" {
+		urls = append(urls, target)
 	}
-	for _, url := range w.CallbackURLs {
-		if url = strings.TrimSpace(url); url != "" {
-			urls = append(urls, url)
+	for _, target := range w.CallbackURLs {
+		if target = strings.TrimSpace(target); target != "" {
+			urls = append(urls, target)
 		}
 	}
 	return urls
+}
+
+func validateWebhookURL(value string) error {
+	parsed, err := url.ParseRequestURI(value)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Errorf("webhook callback URL %q must be an absolute http or https URL", value)
+	}
+	return nil
 }
 
 type LuaCallback struct {
@@ -75,6 +84,11 @@ func (c Callback) Validate() error {
 		}
 		if c.Lua != nil {
 			return errors.New("webhook callback cannot include lua configuration")
+		}
+		for _, target := range c.Webhook.URLs() {
+			if err := validateWebhookURL(target); err != nil {
+				return err
+			}
 		}
 	case CallbackLua:
 		if c.Lua == nil || strings.TrimSpace(c.Lua.Name) == "" {
