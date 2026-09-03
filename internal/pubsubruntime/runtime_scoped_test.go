@@ -37,9 +37,9 @@ func TestScopedRuntimeUsesCanonicalTransportAddress(t *testing.T) {
 
 func TestSubscriptionControllerActivateRefreshesCurrentDefinition(t *testing.T) {
 	store := &mutableRuntimeStore{
-		channels: map[string]pubsubmodel.Channel{"events": {Name: "events"}},
+		channels:   map[string]pubsubmodel.Channel{"events": {Name: "events"}},
 		subscriber: pubsubmodel.Subscriber{ID: "sub-a", Channel: "events", CallbackIDs: []string{"hook"}},
-		callback: pubsubmodel.Callback{ID: "hook", Type: pubsubmodel.CallbackWebhook, Webhook: &pubsubmodel.WebhookCallback{CallbackURL: "https://one.example/hook"}},
+		callback:   pubsubmodel.Callback{ID: "hook", Type: pubsubmodel.CallbackWebhook, Webhook: &pubsubmodel.WebhookCallback{CallbackURL: "https://one.example/hook"}},
 	}
 	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:0"})
 	t.Cleanup(func() { _ = client.Close() })
