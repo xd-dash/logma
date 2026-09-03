@@ -10,7 +10,12 @@ func TestDeliveryDispatcherDropsWhenBoundedQueueIsFull(t *testing.T) {
 	started := make(chan struct{}, deliveryWorkerCount)
 	release := make(chan struct{})
 	dispatcher := newDeliveryDispatcher(func(context.Context, string, string) error {
-		started <- struct{}{}
+		// Only the initial worker-saturating observations matter. Later queued
+		// jobs must not block test instrumentation while dispatcher.close drains.
+		select {
+		case started <- struct{}{}:
+		default:
+		}
 		<-release
 		return nil
 	})
