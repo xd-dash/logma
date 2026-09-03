@@ -243,7 +243,9 @@ func (a *pubSubResourceAPI) putSubscriptionGroup(w http.ResponseWriter, r *http.
 	var resource pubsubmodel.SubscriptionGroup
 	a.put(w, r, &resource,
 		func(store pubSubResourceStore) error { return store.PutSubscriptionGroup(r.Context(), resource) },
-		func(store pubSubResourceStore) (any, error) { return store.GetSubscriptionGroup(r.Context(), resource.ID) },
+		func(store pubSubResourceStore) (any, error) {
+			return store.GetSubscriptionGroup(r.Context(), resource.ID)
+		},
 	)
 }
 
