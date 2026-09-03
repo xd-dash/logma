@@ -12,7 +12,7 @@ Channel
 Callback
   independently addressable delivery/action resource
   typed configuration
-    webhook -> callbackURL
+    webhook -> one or many callback URLs
     lua     -> function name
     ...future callback types
 
@@ -45,7 +45,9 @@ An empty active Channel is therefore valid. This deliberately diverges from expo
 
 Callbacks are resources rather than fields embedded in a subscription. A Subscriber may reference one or many callbacks, and the same callback may be reused by multiple Subscribers when policy permits.
 
-Initial callback types:
+A webhook Callback preserves Logma's historical fanout behavior: one webhook resource may contain either the single-target `callbackURL` compatibility form, the multi-target `callbackURLs` form, or both. Dispatch targets are the normalized non-empty union in declaration order.
+
+Single-target example:
 
 ```json
 {
@@ -53,6 +55,21 @@ Initial callback types:
   "type": "webhook",
   "webhook": {
     "callbackURL": "https://example.invalid/hook"
+  }
+}
+```
+
+Multi-target example:
+
+```json
+{
+  "id": "callback-webhook-many",
+  "type": "webhook",
+  "webhook": {
+    "callbackURLs": [
+      "https://one.example.invalid/hook",
+      "https://two.example.invalid/hook"
+    ]
   }
 }
 ```
@@ -68,6 +85,8 @@ Initial callback types:
 ```
 
 A callback type owns its own configuration schema. Generic Subscriber state stores callback identities rather than flattening every callback type into subscriber fields.
+
+The historical versioned Pub/Sub experiment accepted repeated callback query parameters, `callbackURL` as either a string or a list, `callbackURLs` as a list, and callback schemes containing both a single URL and URL list. The new resource model must not regress the semantic capability to fan out one webhook callback to multiple HTTP targets even if the eventual public API chooses a cleaner canonical request shape.
 
 ## Serverless is not a standing Subscriber
 
@@ -98,12 +117,14 @@ Current `main` persists:
 active_subscriptions:<subscription-id>:<channel> = <callbackURL>
 ```
 
-That historical representation combines an active Redis listener and one webhook callback in one record. Migration must be incremental:
+That current representation combines an active Redis listener and one webhook callback in one record. An earlier versioned Pub/Sub branch had already generalized callback request/config parsing to multiple HTTP targets, so the target resource model preserves that fanout capability while separating callback identity from subscriber identity.
+
+Migration must be incremental:
 
 1. introduce typed resource contracts and validation;
 2. add scoped resource persistence;
 3. add Channel activation independent of callbacks;
-4. add callback collection API and Subscriber references;
+4. add callback collection API and Subscriber references, including multi-target webhook fanout;
 5. adapt legacy `/{channel}/subscribe` as a compatibility operation that creates a webhook Callback plus Subscriber against an active Channel;
 6. update subscription groups to store Subscriber/resource identities rather than flattened callback URLs;
 7. add Publisher integrations without moving producer-specific semantics into generic Logma Pub/Sub;
