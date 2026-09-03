@@ -16,12 +16,11 @@ func (s *RedisStore) DeleteSubscriber(ctx context.Context, id string) error {
 	}
 	subscriberKey := s.keys.Subscriber(id)
 	callbacksKey := s.keys.SubscriberCallbacks(id)
-	groupsKey := s.keys.SubscriberGroups(id)
 	return s.watch(ctx, func(tx *redis.Tx) error {
 		channel, err := tx.HGet(ctx, subscriberKey, "channel").Result()
 		if err == redis.Nil {
 			_, cleanupErr := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-				pipe.Del(ctx, callbacksKey, groupsKey)
+				pipe.Del(ctx, callbacksKey)
 				pipe.SRem(ctx, s.keys.Subscribers(), id)
 				return nil
 			})
@@ -35,7 +34,7 @@ func (s *RedisStore) DeleteSubscriber(ctx context.Context, id string) error {
 			return err
 		}
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-			pipe.Del(ctx, subscriberKey, callbacksKey, groupsKey)
+			pipe.Del(ctx, subscriberKey, callbacksKey)
 			pipe.SRem(ctx, s.keys.Subscribers(), id)
 			if channel != "" {
 				pipe.SRem(ctx, s.keys.ChannelSubscribers(channel), id)
@@ -46,7 +45,7 @@ func (s *RedisStore) DeleteSubscriber(ctx context.Context, id string) error {
 			return nil
 		})
 		return err
-	}, subscriberKey, callbacksKey, groupsKey)
+	}, subscriberKey, callbacksKey)
 }
 
 // DeletePublisher removes a Publisher and reconciles its Channel reverse edge
@@ -59,12 +58,10 @@ func (s *RedisStore) DeletePublisher(ctx context.Context, id string) error {
 		return errors.New("publisher id is required")
 	}
 	publisherKey := s.keys.Publisher(id)
-	groupsKey := s.keys.PublisherGroupsForPublisher(id)
 	return s.watch(ctx, func(tx *redis.Tx) error {
 		channel, err := tx.HGet(ctx, publisherKey, "channel").Result()
 		if err == redis.Nil {
 			_, cleanupErr := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-				pipe.Del(ctx, groupsKey)
 				pipe.SRem(ctx, s.keys.Publishers(), id)
 				return nil
 			})
@@ -74,7 +71,7 @@ func (s *RedisStore) DeletePublisher(ctx context.Context, id string) error {
 			return err
 		}
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-			pipe.Del(ctx, publisherKey, groupsKey)
+			pipe.Del(ctx, publisherKey)
 			pipe.SRem(ctx, s.keys.Publishers(), id)
 			if channel != "" {
 				pipe.SRem(ctx, s.keys.ChannelPublishers(channel), id)
@@ -82,7 +79,7 @@ func (s *RedisStore) DeletePublisher(ctx context.Context, id string) error {
 			return nil
 		})
 		return err
-	}, publisherKey, groupsKey)
+	}, publisherKey)
 }
 
 func (s *RedisStore) DeleteCallback(ctx context.Context, id string) error {
