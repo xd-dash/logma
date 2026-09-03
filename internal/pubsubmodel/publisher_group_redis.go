@@ -78,7 +78,11 @@ func (s *RedisStore) GetPublisherGroup(ctx context.Context, id string) (Publishe
 		return PublisherGroup{}, err
 	}
 	sort.Strings(publishers)
-	return PublisherGroup{ID: fields["id"], PublisherIDs: publishers}, nil
+	group := PublisherGroup{ID: fields["id"], PublisherIDs: publishers}
+	if err := group.Validate(); err != nil {
+		return PublisherGroup{}, fmt.Errorf("decode publisher group %s: %w", id, err)
+	}
+	return group, nil
 }
 
 func (s *RedisStore) DeletePublisherGroup(ctx context.Context, id string) error {
