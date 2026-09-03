@@ -57,14 +57,20 @@ func (r *PublisherRegistry) provider(kind string) (PublisherProvider, bool) {
 	return provider, ok
 }
 
+type publisherOperation struct {
+	done chan struct{}
+	err  error
+}
+
 type PublisherReconciler struct {
 	store     PublisherStore
 	providers *PublisherRegistry
 	ctx       context.Context
 	cancel    context.CancelFunc
 
-	mu     sync.Mutex
-	closed bool
+	mu      sync.Mutex
+	pending map[string]*publisherOperation
+	closed  bool
 }
 
 // NewPublisherReconciler deliberately does not own a generic Channel listener.
@@ -80,14 +86,55 @@ func NewPublisherReconciler(store PublisherStore, providers *PublisherRegistry) 
 		return nil, errors.New("publisher provider registry is required")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &PublisherReconciler{store: store, providers: providers, ctx: ctx, cancel: cancel}, nil
+	return &PublisherReconciler{
+		store:     store,
+		providers: providers,
+		ctx:       ctx,
+		cancel:    cancel,
+		pending:   make(map[string]*publisherOperation),
+	}, nil
 }
 
+// Reconcile coalesces concurrent work for the same Publisher identity. Provider
+// idempotence is still required across time, but providers do not also need to
+// implement duplicate-start exclusion for simultaneous identical commands.
+// Different Publisher identities remain independent.
 func (r *PublisherReconciler) Reconcile(ctx context.Context, id string) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return errors.New("publisher id is required")
 	}
+
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return errors.New("publisher reconciler is closed")
+	}
+	if pending, ok := r.pending[id]; ok {
+		done := pending.done
+		r.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-done:
+			return pending.err
+		}
+	}
+	pending := &publisherOperation{done: make(chan struct{})}
+	r.pending[id] = pending
+	r.mu.Unlock()
+
+	err := r.reconcile(ctx, id)
+
+	r.mu.Lock()
+	delete(r.pending, id)
+	pending.err = err
+	close(pending.done)
+	r.mu.Unlock()
+	return err
+}
+
+func (r *PublisherReconciler) reconcile(ctx context.Context, id string) error {
 	publisher, err := r.store.GetPublisher(ctx, id)
 	if err != nil {
 		return err
@@ -114,6 +161,9 @@ func (r *PublisherReconciler) Reconcile(ctx context.Context, id string) error {
 
 	if err := provider.EnsureActive(runtimeCtx, publisher, channel); err != nil {
 		return fmt.Errorf("activate publisher %s with provider %s: %w", publisher.ID, publisher.Type, err)
+	}
+	if err := runtimeCtx.Err(); err != nil {
+		return fmt.Errorf("publisher reconciler closed during activation: %w", err)
 	}
 	return nil
 }
