@@ -70,7 +70,7 @@ func TestStaleSubscriberHandleCannotDetachReplacement(t *testing.T) {
 	store := fakeStore{
 		channels:    map[string]pubsubmodel.Channel{"events": {Name: "events"}},
 		subscribers: map[string]pubsubmodel.Subscriber{"sub-a": {ID: "sub-a", Channel: "events", CallbackIDs: []string{"hook"}}},
-		callbacks:   map[string]pubsubmodel.Callback{"hook": {ID: "hook", Type: CallbackWebhook, Webhook: &pubsubmodel.WebhookCallback{CallbackURL: "https://example.invalid/hook"}}},
+		callbacks:   map[string]pubsubmodel.Callback{"hook": {ID: "hook", Type: pubsubmodel.CallbackWebhook, Webhook: &pubsubmodel.WebhookCallback{CallbackURL: "https://example.invalid/hook"}}},
 	}
 	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:0"})
 	t.Cleanup(func() { _ = client.Close() })
@@ -117,7 +117,7 @@ func TestDeactivateCancelsWebhookContext(t *testing.T) {
 	store := fakeStore{
 		channels:    map[string]pubsubmodel.Channel{"events": {Name: "events"}},
 		subscribers: map[string]pubsubmodel.Subscriber{"sub-a": {ID: "sub-a", Channel: "events", CallbackIDs: []string{"hook"}}},
-		callbacks:   map[string]pubsubmodel.Callback{"hook": {ID: "hook", Type: CallbackWebhook, Webhook: &pubsubmodel.WebhookCallback{CallbackURL: "https://example.invalid/hook"}}},
+		callbacks:   map[string]pubsubmodel.Callback{"hook": {ID: "hook", Type: pubsubmodel.CallbackWebhook, Webhook: &pubsubmodel.WebhookCallback{CallbackURL: "https://example.invalid/hook"}}},
 	}
 	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:0"})
 	t.Cleanup(func() { _ = client.Close() })
