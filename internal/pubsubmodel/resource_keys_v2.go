@@ -103,16 +103,8 @@ func (k ResourceKeysV2) SubscriberCallbacks(id string) string {
 	return k.child("subscriber", strings.TrimSpace(id), "callbacks")
 }
 
-func (k ResourceKeysV2) SubscriberGroups(id string) string {
-	return k.child("subscriber", strings.TrimSpace(id), "subscription-groups")
-}
-
 func (k ResourceKeysV2) Publisher(id string) string {
 	return k.resource("publisher", strings.TrimSpace(id))
-}
-
-func (k ResourceKeysV2) PublisherGroupsForPublisher(id string) string {
-	return k.child("publisher", strings.TrimSpace(id), "publisher-groups")
 }
 
 func (k ResourceKeysV2) SubscriptionGroup(id string) string {
