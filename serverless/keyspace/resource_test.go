@@ -39,7 +39,7 @@ func TestResourceIdentityEncodingIsInjectiveForAmbiguousInputs(t *testing.T) {
 
 func TestResourceRejectsEmptyIdentityAndUnsafeStructure(t *testing.T) {
 	scope, _ := ParseScope("dev-safe")
-	for _, parts := range [][]string{{}, {"logma:*"}, {"logma", "pub sub"}, {"logma", "pubsub", "channel:unsafe"}} {
+	for _, parts := range [][]string{{}, {"logma:*"}, {"log%ma"}, {"logma", "pub sub"}, {"logma", "pubsub", "channel:unsafe"}} {
 		if _, err := NewFamily(scope, parts...); err == nil {
 			t.Fatalf("NewFamily(%v) succeeded", parts)
 		}
