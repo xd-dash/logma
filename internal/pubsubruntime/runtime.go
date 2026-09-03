@@ -9,6 +9,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/xd-dash/logma/internal/pubsubmodel"
+	"github.com/xd-dash/logma/serverless/keyspace"
 	serverlesspubsub "github.com/xd-dash/logma/serverless/pubsub"
 )
 
@@ -26,12 +27,14 @@ type Subscriber interface {
 
 type subscribeFunc func(context.Context, *redis.Client, string, func(string)) Subscriber
 type webhookSender func(context.Context, string, string) error
+type transportAddressFunc func(string) (string, error)
 
 type Runtime struct {
-	client      *redis.Client
-	store       ResourceStore
-	subscribe   subscribeFunc
-	sendWebhook webhookSender
+	client           *redis.Client
+	store            ResourceStore
+	subscribe        subscribeFunc
+	sendWebhook      webhookSender
+	transportAddress transportAddressFunc
 
 	mu     sync.Mutex
 	active map[string]*channelActivation
@@ -99,6 +102,9 @@ type SubscriberHandle struct {
 	token        uint64
 }
 
+// New retains the historical raw-channel transport behavior for compatibility
+// callers. New Fatline v2 compositions must use NewScoped so transport topics
+// inherit the same explicit security scope as durable resource addresses.
 func New(client *redis.Client, store ResourceStore) (*Runtime, error) {
 	if client == nil {
 		return nil, errors.New("redis client is required")
@@ -111,13 +117,34 @@ func New(client *redis.Client, store ResourceStore) (*Runtime, error) {
 	}, postWebhook), nil
 }
 
+// NewScoped is the canonical Fatline v2 constructor. Logical Channel identity
+// remains application-facing while Redis Pub/Sub transport uses the injective,
+// scope-derived <scope>:logma:transport:channel:<encoded-id> address family.
+func NewScoped(client *redis.Client, store ResourceStore, scope string) (*Runtime, error) {
+	runtime, err := New(client, store)
+	if err != nil {
+		return nil, err
+	}
+	parsedScope, err := keyspace.ParseScope(strings.TrimSpace(scope))
+	if err != nil {
+		return nil, err
+	}
+	runtime.transportAddress = func(channel string) (string, error) {
+		return keyspace.LogmaPubSubTransportChannel(parsedScope, channel)
+	}
+	return runtime, nil
+}
+
 func newWithDependencies(client *redis.Client, store ResourceStore, subscribe subscribeFunc, sendWebhook webhookSender) *Runtime {
 	return &Runtime{
 		client:      client,
 		store:       store,
 		subscribe:   subscribe,
 		sendWebhook: sendWebhook,
-		active:      make(map[string]*channelActivation),
+		transportAddress: func(channel string) (string, error) {
+			return channel, nil
+		},
+		active: make(map[string]*channelActivation),
 	}
 }
 
@@ -128,6 +155,10 @@ func (r *Runtime) Activate(ctx context.Context, name string, onMessage func(stri
 	}
 	if _, err := r.store.GetChannel(ctx, name); err != nil {
 		return nil, err
+	}
+	transportName, err := r.transportAddress(name)
+	if err != nil {
+		return nil, fmt.Errorf("resolve channel transport address %s: %w", name, err)
 	}
 
 	r.mu.Lock()
@@ -148,7 +179,7 @@ func (r *Runtime) Activate(ctx context.Context, name string, onMessage func(stri
 	if onMessage != nil {
 		activation.putHandler("__channel__", onMessage)
 	}
-	activation.subscriber = r.subscribe(subCtx, r.client, name, activation.dispatch)
+	activation.subscriber = r.subscribe(subCtx, r.client, transportName, activation.dispatch)
 	r.active[name] = activation
 
 	go r.removeWhenStopped(name, activation)
