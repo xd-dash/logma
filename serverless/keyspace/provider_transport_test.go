@@ -24,9 +24,9 @@ func TestLogmaPubSubTransportAddressAndRequirements(t *testing.T) {
 		commands   []string
 		notCommand string
 	}{
-		{name: "publish", access: AccessPublish, commands: []string{"client", "hello", "ping", "publish"}, notCommand: "subscribe"},
-		{name: "subscribe", access: AccessSubscribe, commands: []string{"client", "hello", "ping", "subscribe", "unsubscribe"}, notCommand: "publish"},
-		{name: "both", access: AccessPublish | AccessSubscribe, commands: []string{"client", "hello", "ping", "publish", "subscribe", "unsubscribe"}},
+		{name: "publish", access: AccessPublish, commands: []string{"ping", "hello", "client", "publish"}, notCommand: "subscribe"},
+		{name: "subscribe", access: AccessSubscribe, commands: []string{"ping", "hello", "client", "subscribe", "unsubscribe"}, notCommand: "publish"},
+		{name: "both", access: AccessPublish | AccessSubscribe, commands: []string{"ping", "hello", "client", "publish", "subscribe", "unsubscribe"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
