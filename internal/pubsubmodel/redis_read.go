@@ -11,8 +11,6 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-var ErrNotFound = errors.New("pubsub resource not found")
-
 func (s *RedisStore) GetChannel(ctx context.Context, name string) (Channel, error) {
 	name = normalizeIdentity(name)
 	if name == "" {
