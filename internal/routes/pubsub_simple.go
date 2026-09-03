@@ -181,6 +181,10 @@ func (a *simplePubSubAPI) subscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := composer.CreateWebhookSubscription(r.Context(), channel, callback, subscriber); err != nil {
+		if errors.Is(err, pubsubmodel.ErrAlreadyExists) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		writeGraphMutationError(w, err, "failed to create Subscription")
 		return
 	}
