@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/xd-dash/logma/internal/pubsubmodel"
 )
+
+const maxPubSubResourceBodyBytes = 1 << 20
 
 type pubSubResourceStore interface {
 	PutChannel(context.Context, pubsubmodel.Channel) error
@@ -34,10 +37,6 @@ func newPubSubResourceAPI() *pubSubResourceAPI {
 	}}
 }
 
-// NewPubSubResourceRouter exposes the additive resource API independently of
-// the legacy /channels compatibility surface. The canonical router can mount
-// this after the resource contract has been qualified without changing legacy
-// active_subscriptions behavior in the same step.
 func NewPubSubResourceRouter() http.Handler {
 	return newPubSubResourceRouter(newPubSubResourceAPI())
 }
@@ -81,7 +80,12 @@ func (a *pubSubResourceAPI) putChannel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to persist Channel", http.StatusInternalServerError)
 		return
 	}
-	writeResource(w, http.StatusCreated, resource)
+	stored, err := store.GetChannel(r.Context(), resource.Name)
+	if err != nil {
+		http.Error(w, "failed to read persisted Channel", http.StatusInternalServerError)
+		return
+	}
+	writeResource(w, http.StatusCreated, stored)
 }
 
 func (a *pubSubResourceAPI) getChannel(w http.ResponseWriter, r *http.Request) {
@@ -99,7 +103,7 @@ func (a *pubSubResourceAPI) deleteChannel(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err := store.DeleteChannel(r.Context(), chi.URLParam(r, "name")); err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		writeGraphMutationError(w, err, "failed to delete Channel")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -122,7 +126,12 @@ func (a *pubSubResourceAPI) putCallback(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "failed to persist Callback", http.StatusInternalServerError)
 		return
 	}
-	writeResource(w, http.StatusCreated, resource)
+	stored, err := store.GetCallback(r.Context(), resource.ID)
+	if err != nil {
+		http.Error(w, "failed to read persisted Callback", http.StatusInternalServerError)
+		return
+	}
+	writeResource(w, http.StatusCreated, stored)
 }
 
 func (a *pubSubResourceAPI) getCallback(w http.ResponseWriter, r *http.Request) {
@@ -140,7 +149,7 @@ func (a *pubSubResourceAPI) deleteCallback(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err := store.DeleteCallback(r.Context(), chi.URLParam(r, "id")); err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		writeGraphMutationError(w, err, "failed to delete Callback")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -160,10 +169,15 @@ func (a *pubSubResourceAPI) putSubscriber(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err := store.PutSubscriber(r.Context(), resource); err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		writeGraphMutationError(w, err, "failed to persist Subscriber")
 		return
 	}
-	writeResource(w, http.StatusCreated, resource)
+	stored, err := store.GetSubscriber(r.Context(), resource.ID)
+	if err != nil {
+		http.Error(w, "failed to read persisted Subscriber", http.StatusInternalServerError)
+		return
+	}
+	writeResource(w, http.StatusCreated, stored)
 }
 
 func (a *pubSubResourceAPI) getSubscriber(w http.ResponseWriter, r *http.Request) {
@@ -197,13 +211,27 @@ func (a *pubSubResourceAPI) resourceStore(w http.ResponseWriter) (pubSubResource
 }
 
 func decodeResource(w http.ResponseWriter, r *http.Request, target any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxPubSubResourceBodyBytes)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		http.Error(w, "invalid JSON resource", http.StatusBadRequest)
 		return false
 	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		http.Error(w, "invalid JSON resource", http.StatusBadRequest)
+		return false
+	}
 	return true
+}
+
+func writeGraphMutationError(w http.ResponseWriter, err error, internalMessage string) {
+	if errors.Is(err, pubsubmodel.ErrMissingReference) || errors.Is(err, pubsubmodel.ErrReferenced) {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	http.Error(w, internalMessage, http.StatusInternalServerError)
 }
 
 func writeGetResult[T any](w http.ResponseWriter, resource T, err error) {
