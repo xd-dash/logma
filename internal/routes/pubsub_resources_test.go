@@ -12,10 +12,12 @@ import (
 )
 
 type fakePubSubResourceStore struct {
-	channels    map[string]pubsubmodel.Channel
-	callbacks   map[string]pubsubmodel.Callback
-	subscribers map[string]pubsubmodel.Subscriber
-	putSubErr   error
+	channels       map[string]pubsubmodel.Channel
+	callbacks      map[string]pubsubmodel.Callback
+	subscribers    map[string]pubsubmodel.Subscriber
+	putSubErr      error
+	deleteChannelErr  error
+	deleteCallbackErr error
 }
 
 func newFakePubSubResourceStore() *fakePubSubResourceStore {
@@ -39,6 +41,14 @@ func (s *fakePubSubResourceStore) GetChannel(_ context.Context, name string) (pu
 	return resource, nil
 }
 
+func (s *fakePubSubResourceStore) DeleteChannel(_ context.Context, name string) error {
+	if s.deleteChannelErr != nil {
+		return s.deleteChannelErr
+	}
+	delete(s.channels, name)
+	return nil
+}
+
 func (s *fakePubSubResourceStore) PutCallback(_ context.Context, resource pubsubmodel.Callback) error {
 	s.callbacks[resource.ID] = resource
 	return nil
@@ -50,6 +60,14 @@ func (s *fakePubSubResourceStore) GetCallback(_ context.Context, id string) (pub
 		return pubsubmodel.Callback{}, pubsubmodel.ErrNotFound
 	}
 	return resource, nil
+}
+
+func (s *fakePubSubResourceStore) DeleteCallback(_ context.Context, id string) error {
+	if s.deleteCallbackErr != nil {
+		return s.deleteCallbackErr
+	}
+	delete(s.callbacks, id)
+	return nil
 }
 
 func (s *fakePubSubResourceStore) PutSubscriber(_ context.Context, resource pubsubmodel.Subscriber) error {
@@ -66,6 +84,11 @@ func (s *fakePubSubResourceStore) GetSubscriber(_ context.Context, id string) (p
 		return pubsubmodel.Subscriber{}, pubsubmodel.ErrNotFound
 	}
 	return resource, nil
+}
+
+func (s *fakePubSubResourceStore) DeleteSubscriber(_ context.Context, id string) error {
+	delete(s.subscribers, id)
+	return nil
 }
 
 func resourceTestRouter(t *testing.T, store *fakePubSubResourceStore) http.Handler {
@@ -116,6 +139,45 @@ func TestPubSubResourceAPIChannelCallbackSubscriberRoundTrip(t *testing.T) {
 	resp = requestResource(t, router, http.MethodGet, "/pubsub/subscribers/sub-a", "")
 	if resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), `"callbackIDs":["hook"]`) {
 		t.Fatalf("GET Subscriber status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestPubSubResourceAPIGuardedDeleteOrder(t *testing.T) {
+	store := newFakePubSubResourceStore()
+	store.channels["events"] = pubsubmodel.Channel{Name: "events"}
+	store.callbacks["hook"] = pubsubmodel.Callback{ID: "hook", Type: pubsubmodel.CallbackWebhook, Webhook: &pubsubmodel.WebhookCallback{CallbackURL: "https://example.invalid/hook"}}
+	store.subscribers["sub-a"] = pubsubmodel.Subscriber{ID: "sub-a", Channel: "events", CallbackIDs: []string{"hook"}}
+	store.deleteChannelErr = errors.New("channel is still referenced by subscribers or publishers")
+	store.deleteCallbackErr = errors.New("callback is still referenced by subscribers")
+	router := resourceTestRouter(t, store)
+
+	resp := requestResource(t, router, http.MethodDelete, "/pubsub/callbacks/hook", "")
+	if resp.Code != http.StatusConflict {
+		t.Fatalf("referenced Callback delete status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	resp = requestResource(t, router, http.MethodDelete, "/pubsub/channels/events", "")
+	if resp.Code != http.StatusConflict {
+		t.Fatalf("referenced Channel delete status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+
+	resp = requestResource(t, router, http.MethodDelete, "/pubsub/subscribers/sub-a", "")
+	if resp.Code != http.StatusNoContent {
+		t.Fatalf("Subscriber delete status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	resp = requestResource(t, router, http.MethodGet, "/pubsub/subscribers/sub-a", "")
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("deleted Subscriber GET status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+
+	store.deleteChannelErr = nil
+	store.deleteCallbackErr = nil
+	resp = requestResource(t, router, http.MethodDelete, "/pubsub/callbacks/hook", "")
+	if resp.Code != http.StatusNoContent {
+		t.Fatalf("Callback delete status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	resp = requestResource(t, router, http.MethodDelete, "/pubsub/channels/events", "")
+	if resp.Code != http.StatusNoContent {
+		t.Fatalf("Channel delete status = %d, body = %s", resp.Code, resp.Body.String())
 	}
 }
 
