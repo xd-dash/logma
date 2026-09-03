@@ -32,6 +32,8 @@ func main() {
 	// /pubsub/* graph remains mounted as an advanced control-plane surface.
 	simplePubSubRouter := routes.NewSimplePubSubRouter()
 	router.Handle("/subscribe", simplePubSubRouter)
+	router.Handle("/groups", simplePubSubRouter)
+	router.Handle("/groups/*", simplePubSubRouter)
 	router.Handle("/state", simplePubSubRouter)
 	router.Handle("/pubsub/*", routes.NewPubSubResourceRouter())
 	router.Mount("/", routes.NewRouter())
