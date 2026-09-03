@@ -8,20 +8,20 @@ func TestResourceKeysV2MapPubSubGraphToCanonicalFamilies(t *testing.T) {
 		t.Fatal(err)
 	}
 	cases := map[string]string{
-		keys.Channel("dev:global:events"):                  "dev-safe:logma:pubsub:channel:dev%3Aglobal%3Aevents",
-		keys.ChannelSubscribers("dev:global:events"):       "dev-safe:logma:pubsub:channel:dev%3Aglobal%3Aevents:subscribers",
-		keys.ChannelPublishers("dev:global:events"):        "dev-safe:logma:pubsub:channel:dev%3Aglobal%3Aevents:publishers",
-		keys.Callback("callback 1"):                        "dev-safe:logma:pubsub:callback:callback%201",
-		keys.CallbackURLs("callback 1"):                    "dev-safe:logma:pubsub:callback:callback%201:urls",
-		keys.CallbackSubscribers("callback 1"):             "dev-safe:logma:pubsub:callback:callback%201:subscribers",
-		keys.Subscriber("subscriber:1"):                    "dev-safe:logma:pubsub:subscriber:subscriber%3A1",
-		keys.SubscriberCallbacks("subscriber:1"):           "dev-safe:logma:pubsub:subscriber:subscriber%3A1:callbacks",
-		keys.Publisher("publisher:1"):                      "dev-safe:logma:pubsub:publisher:publisher%3A1",
-		keys.SubscriptionGroup("group:1"):                  "dev-safe:logma:pubsub:subscription-group:group%3A1",
-		keys.SubscriptionGroupSubscribers("group:1"):       "dev-safe:logma:pubsub:subscription-group:group%3A1:subscribers",
-		keys.Channels():                                     "dev-safe:logma:pubsub:registry:channels",
-		keys.Callbacks():                                    "dev-safe:logma:pubsub:registry:callbacks",
-		keys.Subscribers():                                  "dev-safe:logma:pubsub:registry:subscribers",
+		keys.Channel("dev:global:events"):            "dev-safe:logma:pubsub:channel:dev%3Aglobal%3Aevents",
+		keys.ChannelSubscribers("dev:global:events"): "dev-safe:logma:pubsub:channel:dev%3Aglobal%3Aevents:subscribers",
+		keys.ChannelPublishers("dev:global:events"):  "dev-safe:logma:pubsub:channel:dev%3Aglobal%3Aevents:publishers",
+		keys.Callback("callback 1"):                  "dev-safe:logma:pubsub:callback:callback%201",
+		keys.CallbackURLs("callback 1"):              "dev-safe:logma:pubsub:callback:callback%201:urls",
+		keys.CallbackSubscribers("callback 1"):       "dev-safe:logma:pubsub:callback:callback%201:subscribers",
+		keys.Subscriber("subscriber:1"):              "dev-safe:logma:pubsub:subscriber:subscriber%3A1",
+		keys.SubscriberCallbacks("subscriber:1"):     "dev-safe:logma:pubsub:subscriber:subscriber%3A1:callbacks",
+		keys.Publisher("publisher:1"):                "dev-safe:logma:pubsub:publisher:publisher%3A1",
+		keys.SubscriptionGroup("group:1"):            "dev-safe:logma:pubsub:subscription-group:group%3A1",
+		keys.SubscriptionGroupSubscribers("group:1"): "dev-safe:logma:pubsub:subscription-group:group%3A1:subscribers",
+		keys.Channels():                              "dev-safe:logma:pubsub:registry:channels",
+		keys.Callbacks():                             "dev-safe:logma:pubsub:registry:callbacks",
+		keys.Subscribers():                           "dev-safe:logma:pubsub:registry:subscribers",
 	}
 	for got, want := range cases {
 		if got != want {
