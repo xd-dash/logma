@@ -34,8 +34,8 @@ type Runtime struct {
 	store     ChannelStore
 	subscribe subscribeFunc
 
-	mu      sync.Mutex
-	active  map[string]*channelActivation
+	mu     sync.Mutex
+	active map[string]*channelActivation
 }
 
 type channelActivation struct {
