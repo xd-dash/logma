@@ -44,8 +44,9 @@ func NewSubscriptionController(runtime *Runtime) (*SubscriptionController, error
 
 // ActivateSubscription is ensure-current rather than merely ensure-present.
 // Repeated activation re-reads the Subscriber and Callback declarations and
-// installs the new handler before detaching the old one. Failed reconciliation
-// therefore leaves the previously active handler intact.
+// installs the new handler before detaching the old one. It returns success only
+// after Redis has acknowledged the shared Channel subscription. Failed
+// reconciliation therefore leaves the previous known-good handler intact.
 func (c *SubscriptionController) ActivateSubscription(ctx context.Context, id string) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -68,9 +69,6 @@ func (c *SubscriptionController) ActivateSubscription(ctx context.Context, id st
 				if pending.err != nil {
 					return pending.err
 				}
-				// This caller requested its own reconciliation. Once the earlier
-				// same-ID operation completes successfully, loop and re-read the
-				// current declaration rather than inheriting an older snapshot.
 				continue
 			}
 		}
@@ -117,10 +115,19 @@ func (c *SubscriptionController) activate(ctx context.Context, id string) (*Subs
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+
+	var channelHandle *Handle
 	if !c.runtime.Active(subscriber.Channel) {
-		if _, err := c.runtime.Activate(c.ctx, subscriber.Channel, nil); err != nil {
+		channelHandle, err = c.runtime.Activate(c.ctx, subscriber.Channel, nil)
+		if err != nil {
 			return nil, err
 		}
+	}
+	if err := c.runtime.WaitReady(ctx, subscriber.Channel); err != nil {
+		if channelHandle != nil {
+			c.runtime.deactivateIfIdle(subscriber.Channel, channelHandle.activation)
+		}
+		return nil, err
 	}
 	return c.runtime.AttachSubscriber(ctx, id)
 }
@@ -128,7 +135,8 @@ func (c *SubscriptionController) activate(ctx context.Context, id string) (*Subs
 // ShutdownSubscription is idempotent for a declared but already-inactive
 // Subscription. A missing durable declaration remains distinguishable as
 // ErrNotFound so weak Group execution can report it as missing rather than
-// falsely claiming a completed shutdown.
+// falsely claiming a completed shutdown. Closing the last handler also releases
+// the shared Redis listener; durable Channel existence remains independent.
 func (c *SubscriptionController) ShutdownSubscription(ctx context.Context, id string) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -169,7 +177,7 @@ func (c *SubscriptionController) ShutdownSubscription(ctx context.Context, id st
 }
 
 // Close is idempotent. It detaches controller-owned Subscriber handlers and
-// cancels Channel activations that were started with the controller lifetime.
+// cancels Channel listeners that were started with the controller lifetime.
 // In-flight activations observe the closed state before publishing their handle.
 func (c *SubscriptionController) Close() {
 	c.mu.Lock()
