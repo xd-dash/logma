@@ -16,13 +16,11 @@ const (
 
 type Subscriber struct {
 	stopped chan struct{}
+	ready   chan struct{}
 
-	readyMu   sync.Mutex
-	ready     chan struct{}
-	connected bool
-
-	errMu   sync.RWMutex
-	lastErr error
+	readyOnce sync.Once
+	errMu     sync.RWMutex
+	lastErr   error
 }
 
 func Subscribe(ctx context.Context, client *redis.Client, channel string, onMessage func(payload string)) *Subscriber {
@@ -33,19 +31,15 @@ func Subscribe(ctx context.Context, client *redis.Client, channel string, onMess
 
 func (s *Subscriber) Stopped() <-chan struct{} { return s.stopped }
 
-// Ready returns the readiness signal for the current Redis connection state.
-// The returned channel is closed while Redis has acknowledged the current
-// subscription and is replaced with a new open channel after that connection is
-// lost. Callers that reconcile an already-running Subscriber can therefore wait
-// for current readiness rather than relying on a one-time historical ACK.
-func (s *Subscriber) Ready() <-chan struct{} {
-	s.readyMu.Lock()
-	defer s.readyMu.Unlock()
-	return s.ready
-}
+// Ready closes after the initial Redis SUBSCRIBE acknowledgement for this
+// Subscriber lifetime. go-redis owns transparent reconnect/resubscribe after
+// that point, so Ready is intentionally not presented as continuous socket
+// health or as a fresh readiness generation after every transport interruption.
+func (s *Subscriber) Ready() <-chan struct{} { return s.ready }
 
-// LastError returns the most recent Redis subscription acknowledgement error.
-// It is diagnostic state only; Subscribe continues its bounded reconnect loop.
+// LastError returns the most recent initial-subscription acknowledgement error.
+// It is diagnostic state only; Subscribe continues its bounded retry loop until
+// the initial subscription is established or the lifetime context is canceled.
 func (s *Subscriber) LastError() error {
 	if s == nil {
 		return nil
@@ -61,31 +55,12 @@ func (s *Subscriber) setLastError(err error) {
 	s.errMu.Unlock()
 }
 
-func (s *Subscriber) markReady() {
-	s.readyMu.Lock()
-	defer s.readyMu.Unlock()
-	if s.connected {
-		return
-	}
-	close(s.ready)
-	s.connected = true
-}
-
-func (s *Subscriber) markNotReady() {
-	s.readyMu.Lock()
-	defer s.readyMu.Unlock()
-	if !s.connected {
-		return
-	}
-	s.ready = make(chan struct{})
-	s.connected = false
+func (s *Subscriber) markInitiallyReady() {
+	s.readyOnce.Do(func() { close(s.ready) })
 }
 
 func (s *Subscriber) run(ctx context.Context, client *redis.Client, channel string, onMessage func(payload string)) {
-	defer func() {
-		s.markNotReady()
-		close(s.stopped)
-	}()
+	defer close(s.stopped)
 	delay := reconnectMinDelay
 	for {
 		if ctx.Err() != nil {
@@ -108,10 +83,12 @@ func (s *Subscriber) run(ctx context.Context, client *redis.Client, channel stri
 			continue
 		}
 		s.setLastError(nil)
-		s.markReady()
-		delay = reconnectMinDelay
+		s.markInitiallyReady()
 
-	receive:
+		// go-redis PubSub.Channel owns transparent network reconnect and
+		// re-subscription. This outer loop is re-entered only if the PubSub itself
+		// closes unexpectedly; initial readiness is not reset for the same
+		// Subscriber lifetime because Channel does not expose an unready edge.
 		for {
 			select {
 			case <-ctx.Done():
@@ -119,11 +96,13 @@ func (s *Subscriber) run(ctx context.Context, client *redis.Client, channel stri
 				return
 			case message, ok := <-ps.Channel():
 				if !ok {
-					s.markNotReady()
 					_ = ps.Close()
-					break receive
+					break
 				}
 				onMessage(message.Payload)
+			}
+			if ps.Channel() == nil {
+				break
 			}
 		}
 	}
