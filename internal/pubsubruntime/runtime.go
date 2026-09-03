@@ -107,6 +107,7 @@ type SubscriberHandle struct {
 	activation   *channelActivation
 	subscriberID string
 	token        uint64
+	cancel       context.CancelFunc
 }
 
 func New(client *redis.Client, store ResourceStore) (*Runtime, error) {
@@ -241,15 +242,16 @@ func (r *Runtime) AttachSubscriber(ctx context.Context, id string) (*SubscriberH
 		r.mu.Unlock()
 		return nil, fmt.Errorf("channel %s is not active", subscriber.Channel)
 	}
+	subscriberCtx, cancel := context.WithCancel(activation.ctx)
 	handler := func(payload string) {
 		for _, url := range urls {
-			r.delivery.dispatch(deliveryJob{ctx: activation.ctx, subscriberID: subscriber.ID, url: url, payload: payload})
+			r.delivery.dispatch(deliveryJob{ctx: subscriberCtx, subscriberID: subscriber.ID, url: url, payload: payload})
 		}
 	}
 	token := activation.putHandler(subscriber.ID, handler)
 	r.mu.Unlock()
 
-	return &SubscriberHandle{runtime: r, channel: subscriber.Channel, activation: activation, subscriberID: subscriber.ID, token: token}, nil
+	return &SubscriberHandle{runtime: r, channel: subscriber.Channel, activation: activation, subscriberID: subscriber.ID, token: token, cancel: cancel}, nil
 }
 
 func (r *Runtime) removeWhenStopped(name string, activation *channelActivation) {
@@ -355,5 +357,6 @@ func (h *Handle) Stopped() <-chan struct{} { return h.sub.Stopped() }
 func (h *Handle) LastError() error         { return h.sub.LastError() }
 func (h *Handle) Close() bool              { return h.runtime.deactivateActivation(h.channel, h.activation) }
 func (h *SubscriberHandle) Close() bool {
+	h.cancel()
 	return h.runtime.detachSubscriber(h.channel, h.activation, h.subscriberID, h.token)
 }
