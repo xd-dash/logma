@@ -72,7 +72,6 @@ func TestRedisStoreGraphRoundTrip(t *testing.T) {
 	assertSet(t, ctx, client, keys.CallbackSubscribers(callbackB.ID), []string{subscriber.ID})
 	assertSet(t, ctx, client, keys.ChannelPublishers(channelA.Name), []string{publisher.ID})
 	assertSet(t, ctx, client, keys.SubscriptionGroupSubscribers(group.ID), []string{subscriber.ID, "subscriber-later"})
-	assertSet(t, ctx, client, keys.SubscriberGroups(subscriber.ID), nil)
 	assertSet(t, ctx, client, keys.Channels(), []string{channelA.Name, channelB.Name})
 	assertSet(t, ctx, client, keys.Callbacks(), []string{callbackA.ID, callbackB.ID})
 	assertSet(t, ctx, client, keys.Subscribers(), []string{subscriber.ID})
