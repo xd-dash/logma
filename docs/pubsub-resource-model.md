@@ -26,6 +26,10 @@ Publisher
   activation ensures the Channel exists before producer startup
   producer-specific startup/config remains owned by the producer integration
 
+SubscriptionGroup
+  durable group metadata
+  references zero or more Subscriber resources
+
 ServerlessEndpoint
   requester-driven delivery surface such as SSE
   exists independently of active Subscriber resources
@@ -92,22 +96,88 @@ The historical versioned Pub/Sub experiment accepted repeated callback query par
 
 The existing Logma serverless `/run` + `/events` model remains requester-driven. It can create SSE or other request-scoped event delivery without becoming a durable active Subscriber resource. This is intentional: endpoint capability and standing Redis subscription state are different resources.
 
+Serverless endpoints are therefore not persisted in the new Redis resource graph yet. If durable endpoint registration becomes useful later, it can be added as its own resource without pretending that request-scoped SSE delivery is a standing Subscriber.
+
 ## Publisher ownership
 
 A Publisher resource identifies a producer binding such as `xd-dash/news` or `xd-dash/stonks`. Activating a Publisher ensures its Channel is active before producer startup, but the generic Pub/Sub model does not absorb producer-specific process, credential, or data-source semantics. Those remain with the producer integration/Fatline composition.
 
-## Redis key direction
+Producer-specific `config` may remain an opaque value inside the Publisher HASH because Logma does not interpret it. This does not make the Publisher a JSON document; the resource identity and graph relationships remain Redis-native.
 
-New persisted resource keys follow the Fatline scope-first grammar rather than extending the historical `active_subscriptions:*` encoding:
+## Redis-native persistence
+
+The REST representation and Redis representation are intentionally independent:
 
 ```text
-<scope>:logma:pubsub:channel:<channel identity>
-<scope>:logma:pubsub:callback:<callback id>
-<scope>:logma:pubsub:subscriber:<subscriber id>
-<scope>:logma:pubsub:publisher:<publisher id>
+JSON request/response
+        ↓
+  Logma resource model
+        ↓
+Redis HASH + SET graph
 ```
 
-`FATLINE_SCOPE` is part of the materialized runtime security boundary. New resource persistence must not silently copy local fixture scope into a retained deployment.
+New persisted resource keys follow the Fatline scope-first grammar rather than extending the historical `active_subscriptions:*` encoding.
+
+### Channel
+
+```text
+HASH <scope>:logma:pubsub:channel:<channel>
+SET  <scope>:logma:pubsub:channel:<channel>:subscribers
+SET  <scope>:logma:pubsub:channel:<channel>:publishers
+```
+
+### Callback
+
+```text
+HASH <scope>:logma:pubsub:callback:<callback-id>
+SET  <scope>:logma:pubsub:callback:<callback-id>:subscribers
+SET  <scope>:logma:pubsub:callback:<callback-id>:urls   # webhook only
+```
+
+Webhook URL membership is a SET because fanout order is not part of delivery correctness. The typed HTTP model may preserve declaration order at its boundary, but durable Redis storage treats destinations as unordered identities and removes duplicates.
+
+### Subscriber
+
+```text
+HASH <scope>:logma:pubsub:subscriber:<subscriber-id>
+SET  <scope>:logma:pubsub:subscriber:<subscriber-id>:callbacks
+```
+
+The Subscriber HASH stores its Channel reference. The Channel reverse `:subscribers` SET and each Callback reverse `:subscribers` SET are maintained with the forward callback membership so graph traversal does not require `SCAN + GET + decode`.
+
+### Publisher
+
+```text
+HASH <scope>:logma:pubsub:publisher:<publisher-id>
+```
+
+The Publisher HASH stores its Channel reference. The Channel reverse `:publishers` SET is maintained transactionally with it.
+
+### SubscriptionGroup
+
+```text
+HASH <scope>:logma:pubsub:group:<group-id>
+SET  <scope>:logma:pubsub:group:<group-id>:subscribers
+```
+
+An empty group is valid. Membership points at Subscriber resources rather than flattening channel/callback configuration into the group.
+
+`FATLINE_SCOPE` is part of the materialized runtime security boundary. New resource persistence requires an explicit non-empty scope and must not silently copy local fixture scope into a retained deployment.
+
+## Graph consistency
+
+Subscriber and Publisher writes use optimistic Redis transactions so their forward references and reverse indexes change together. Referenced Channel, Callback, or Subscriber resources must already exist before relationship-bearing resources are stored.
+
+The storage layer deliberately does not use key scans as its relational mechanism. Reverse indexes are first-class graph edges:
+
+```text
+channel -> subscribers
+channel -> publishers
+callback -> subscribers
+subscriber -> callbacks
+```
+
+A later Redis Function layer may move these mutations behind narrowly scoped `FCALL` operations when we want invariant enforcement entirely server-side. The HASH/SET representation is compatible with that direction and does not require changing the public resource model.
 
 ## Compatibility and migration
 
@@ -119,10 +189,10 @@ active_subscriptions:<subscription-id>:<channel> = <callbackURL>
 
 That current representation combines an active Redis listener and one webhook callback in one record. An earlier versioned Pub/Sub branch had already generalized callback request/config parsing to multiple HTTP targets, so the target resource model preserves that fanout capability while separating callback identity from subscriber identity.
 
-Migration must be incremental:
+Migration remains incremental:
 
 1. introduce typed resource contracts and validation;
-2. add scoped resource persistence;
+2. add scoped Redis-native HASH/SET resource persistence;
 3. add Channel activation independent of callbacks;
 4. add callback collection API and Subscriber references, including multi-target webhook fanout;
 5. adapt legacy `/{channel}/subscribe` as a compatibility operation that creates a webhook Callback plus Subscriber against an active Channel;
