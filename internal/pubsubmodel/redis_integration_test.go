@@ -72,6 +72,7 @@ func TestRedisStoreGraphRoundTrip(t *testing.T) {
 	assertSet(t, ctx, client, keys.CallbackSubscribers(callbackB.ID), []string{subscriber.ID})
 	assertSet(t, ctx, client, keys.ChannelPublishers(channelA.Name), []string{publisher.ID})
 	assertSet(t, ctx, client, keys.SubscriptionGroupSubscribers(group.ID), []string{subscriber.ID})
+	assertSet(t, ctx, client, keys.SubscriberGroups(subscriber.ID), []string{group.ID})
 	assertSet(t, ctx, client, keys.Channels(), []string{channelA.Name, channelB.Name})
 	assertSet(t, ctx, client, keys.Callbacks(), []string{callbackA.ID, callbackB.ID})
 	assertSet(t, ctx, client, keys.Subscribers(), []string{subscriber.ID})
@@ -110,6 +111,8 @@ func TestRedisStoreGraphRoundTrip(t *testing.T) {
 	assertIDs(t, ids, err, []string{publisher.ID})
 	ids, err = store.CallbackSubscriberIDs(ctx, callbackA.ID)
 	assertIDs(t, ids, err, []string{subscriber.ID})
+	ids, err = store.SubscriberGroupIDs(ctx, subscriber.ID)
+	assertIDs(t, ids, err, []string{group.ID})
 	ids, err = store.ChannelIDs(ctx)
 	assertIDs(t, ids, err, []string{channelA.Name, channelB.Name})
 	ids, err = store.CallbackIDs(ctx)
@@ -126,6 +129,7 @@ func TestRedisStoreGraphRoundTrip(t *testing.T) {
 	assertSet(t, ctx, client, keys.CallbackSubscribers(callbackA.ID), nil)
 	assertSet(t, ctx, client, keys.CallbackSubscribers(callbackB.ID), []string{subscriber.ID})
 	assertSet(t, ctx, client, keys.SubscriberCallbacks(subscriber.ID), []string{callbackB.ID})
+	assertSet(t, ctx, client, keys.SubscriberGroups(subscriber.ID), []string{group.ID})
 	gotSubscriber, err = store.GetSubscriber(ctx, subscriber.ID)
 	if err != nil || !reflect.DeepEqual(gotSubscriber, updatedSubscriber) {
 		t.Fatalf("updated GetSubscriber = %#v, %v; want %#v", gotSubscriber, err, updatedSubscriber)
@@ -137,8 +141,19 @@ func TestRedisStoreGraphRoundTrip(t *testing.T) {
 	if err := store.DeleteChannel(ctx, channelB.Name); err == nil {
 		t.Fatal("DeleteChannel succeeded while channel remained referenced")
 	}
+	if err := store.DeleteSubscriber(ctx, subscriber.ID); !errors.Is(err, ErrReferenced) {
+		t.Fatalf("DeleteSubscriber while grouped error = %v, want ErrReferenced", err)
+	}
 	assertSet(t, ctx, client, keys.Callbacks(), []string{callbackA.ID, callbackB.ID})
 	assertSet(t, ctx, client, keys.Channels(), []string{channelA.Name, channelB.Name})
+	assertSet(t, ctx, client, keys.SubscriberGroups(subscriber.ID), []string{group.ID})
+
+	if err := store.DeleteSubscriptionGroup(ctx, group.ID); err != nil {
+		t.Fatalf("delete group: %v", err)
+	}
+	assertSet(t, ctx, client, keys.SubscriberGroups(subscriber.ID), nil)
+	ids, err = store.SubscriberGroupIDs(ctx, subscriber.ID)
+	assertIDs(t, ids, err, nil)
 
 	if err := store.DeleteSubscriber(ctx, subscriber.ID); err != nil {
 		t.Fatalf("delete subscriber: %v", err)
@@ -160,9 +175,6 @@ func TestRedisStoreGraphRoundTrip(t *testing.T) {
 			t.Fatalf("delete channel %s: %v", channelName, err)
 		}
 	}
-	if err := store.DeleteSubscriptionGroup(ctx, group.ID); err != nil {
-		t.Fatalf("delete group: %v", err)
-	}
 
 	remaining, err := scanKeys(ctx, client, scope+":logma:pubsub:*")
 	if err != nil {
@@ -174,6 +186,25 @@ func TestRedisStoreGraphRoundTrip(t *testing.T) {
 
 	if err := store.DeleteSubscriber(ctx, subscriber.ID); err != nil && !errors.Is(err, redis.Nil) {
 		t.Fatalf("idempotent subscriber delete: %v", err)
+	}
+}
+
+func TestRedisStoreRelationshipReadersRejectEmptyIdentity(t *testing.T) {
+	store, err := NewRedisStore(redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"}), "test-scope")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	checks := []func() error{
+		func() error { _, err := store.ChannelSubscriberIDs(ctx, " "); return err },
+		func() error { _, err := store.ChannelPublisherIDs(ctx, " "); return err },
+		func() error { _, err := store.CallbackSubscriberIDs(ctx, " "); return err },
+		func() error { _, err := store.SubscriberGroupIDs(ctx, " "); return err },
+	}
+	for i, check := range checks {
+		if err := check(); err == nil {
+			t.Fatalf("relationship reader %d accepted empty identity", i)
+		}
 	}
 }
 
@@ -212,8 +243,13 @@ func assertIDs(t *testing.T, got []string, err error, want []string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(got, want) {
+	if len(got) != len(want) {
 		t.Fatalf("IDs = %#v, want %#v", got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("IDs = %#v, want %#v", got, want)
+		}
 	}
 }
 
