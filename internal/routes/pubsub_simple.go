@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -12,13 +13,22 @@ import (
 	"github.com/xd-dash/logma/internal/pubsubmodel"
 )
 
+// simpleSubscriptionController is supplied only by a runtime composition that
+// actually owns subscription transport authority. The simple graph facade does
+// not manufacture SUBSCRIBE authority from its resource-store credential.
+type simpleSubscriptionController interface {
+	ActivateSubscription(context.Context, string) error
+	ShutdownSubscription(context.Context, string) error
+}
+
 // simplePubSubAPI is the operator-facing facade over the normalized Pub/Sub
 // resource graph. The graph remains available through /pubsub/* for advanced
 // control-plane use; ordinary callers should not have to manually create a
 // Channel, Callback, and Subscriber for the common webhook-subscription case.
 type simplePubSubAPI struct {
-	store func() (pubSubResourceStore, error)
-	newID func() (string, error)
+	store      func() (pubSubResourceStore, error)
+	newID      func() (string, error)
+	controller simpleSubscriptionController
 }
 
 type simpleSubscribeRequest struct {
@@ -33,6 +43,23 @@ type simpleSubscribeResponse struct {
 	Channel        string `json:"channel"`
 	CallbackID     string `json:"callbackID"`
 	CallbackURL    string `json:"callbackURL"`
+}
+
+type simpleGroupRequest struct {
+	ID            string   `json:"id"`
+	Subscriptions []string `json:"subscriptions"`
+}
+
+type simpleGroupResponse struct {
+	ID            string   `json:"id"`
+	Subscriptions []string `json:"subscriptions"`
+}
+
+type simpleGroupOperationResponse struct {
+	Group     string   `json:"group"`
+	Completed []string `json:"completed"`
+	Missing   []string `json:"missing,omitempty"`
+	Failed    []string `json:"failed,omitempty"`
 }
 
 type simpleState struct {
@@ -51,11 +78,19 @@ func newSimplePubSubAPI() *simplePubSubAPI {
 	}
 }
 
-// NewSimplePubSubRouter exposes the small, task-oriented API. It deliberately
-// composes the existing resource store instead of introducing a second storage
-// model or weakening the v2 ACL/keyspace boundary.
+// NewSimplePubSubRouter exposes the small, task-oriented graph API. Runtime
+// operations return unavailable until an explicitly authorized controller is
+// composed.
 func NewSimplePubSubRouter() http.Handler {
 	return newSimplePubSubRouter(newSimplePubSubAPI())
+}
+
+// NewSimplePubSubRouterWithSubscriptionController composes the same small API
+// with explicitly supplied runtime authority.
+func NewSimplePubSubRouterWithSubscriptionController(controller simpleSubscriptionController) http.Handler {
+	api := newSimplePubSubAPI()
+	api.controller = controller
+	return newSimplePubSubRouter(api)
 }
 
 func newSimplePubSubRouter(api *simplePubSubAPI) http.Handler {
@@ -63,6 +98,11 @@ func newSimplePubSubRouter(api *simplePubSubAPI) http.Handler {
 	r.Use(middleware.Logger)
 	r.Use(authenticateAPIKey)
 	r.Post("/subscribe", api.subscribe)
+	r.Post("/groups", api.putGroup)
+	r.Get("/groups/{id}", api.getGroup)
+	r.Delete("/groups/{id}", api.deleteGroup)
+	r.Post("/groups/{id}/activate", api.activateGroup)
+	r.Post("/groups/{id}/shutdown", api.shutdownGroup)
 	r.Get("/state", api.state)
 	return r
 }
@@ -127,9 +167,6 @@ func (a *simplePubSubAPI) subscribe(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	// These declarations are intentionally idempotent building blocks rather
-	// than a second persistence transaction. RedisStore owns each resource's
-	// graph integrity; a later reconciliation layer owns runtime activation.
 	if err := store.PutChannel(r.Context(), channel); err != nil {
 		writeGraphMutationError(w, err, "failed to ensure Channel")
 		return
@@ -151,10 +188,105 @@ func (a *simplePubSubAPI) subscribe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (a *simplePubSubAPI) state(w http.ResponseWriter, r *http.Request) {
-	store, err := a.store()
+func (a *simplePubSubAPI) putGroup(w http.ResponseWriter, r *http.Request) {
+	var request simpleGroupRequest
+	if !decodeResource(w, r, &request) {
+		return
+	}
+	group := pubsubmodel.SubscriptionGroup{ID: request.ID, SubscriberIDs: request.Subscriptions}
+	if err := group.Validate(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	store, ok := a.resourceStore(w)
+	if !ok {
+		return
+	}
+	if err := store.PutSubscriptionGroup(r.Context(), group); err != nil {
+		writeGraphMutationError(w, err, "failed to persist Group")
+		return
+	}
+	stored, err := store.GetSubscriptionGroup(r.Context(), group.ID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		http.Error(w, "failed to read persisted Group", http.StatusInternalServerError)
+		return
+	}
+	writeResource(w, http.StatusCreated, simpleGroupResponse{ID: stored.ID, Subscriptions: stored.SubscriberIDs})
+}
+
+func (a *simplePubSubAPI) getGroup(w http.ResponseWriter, r *http.Request) {
+	store, ok := a.resourceStore(w)
+	if !ok {
+		return
+	}
+	group, err := store.GetSubscriptionGroup(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeGetResult(w, group, err)
+		return
+	}
+	writeResource(w, http.StatusOK, simpleGroupResponse{ID: group.ID, Subscriptions: group.SubscriberIDs})
+}
+
+func (a *simplePubSubAPI) deleteGroup(w http.ResponseWriter, r *http.Request) {
+	store, ok := a.resourceStore(w)
+	if !ok {
+		return
+	}
+	if err := store.DeleteSubscriptionGroup(r.Context(), chi.URLParam(r, "id")); err != nil {
+		writeGraphMutationError(w, err, "failed to delete Group")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *simplePubSubAPI) activateGroup(w http.ResponseWriter, r *http.Request) {
+	a.runGroupOperation(w, r, func(ctx context.Context, id string) error {
+		return a.controller.ActivateSubscription(ctx, id)
+	})
+}
+
+func (a *simplePubSubAPI) shutdownGroup(w http.ResponseWriter, r *http.Request) {
+	a.runGroupOperation(w, r, func(ctx context.Context, id string) error {
+		return a.controller.ShutdownSubscription(ctx, id)
+	})
+}
+
+func (a *simplePubSubAPI) runGroupOperation(w http.ResponseWriter, r *http.Request, operation func(context.Context, string) error) {
+	if a.controller == nil {
+		http.Error(w, "subscription runtime control is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	store, ok := a.resourceStore(w)
+	if !ok {
+		return
+	}
+	group, err := store.GetSubscriptionGroup(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeGetResult(w, group, err)
+		return
+	}
+	response := simpleGroupOperationResponse{Group: group.ID}
+	for _, id := range group.SubscriberIDs {
+		if _, err := store.GetSubscriber(r.Context(), id); err != nil {
+			if errors.Is(err, pubsubmodel.ErrNotFound) {
+				response.Missing = append(response.Missing, id)
+				continue
+			}
+			response.Failed = append(response.Failed, id)
+			continue
+		}
+		if err := operation(r.Context(), id); err != nil {
+			response.Failed = append(response.Failed, id)
+			continue
+		}
+		response.Completed = append(response.Completed, id)
+	}
+	writeResource(w, http.StatusOK, response)
+}
+
+func (a *simplePubSubAPI) state(w http.ResponseWriter, r *http.Request) {
+	store, ok := a.resourceStore(w)
+	if !ok {
 		return
 	}
 	channels, err := store.ChannelIDs(r.Context())
@@ -189,6 +321,15 @@ func (a *simplePubSubAPI) state(w http.ResponseWriter, r *http.Request) {
 		Groups:          groups,
 		PublisherGroups: publisherGroups,
 	})
+}
+
+func (a *simplePubSubAPI) resourceStore(w http.ResponseWriter) (pubSubResourceStore, bool) {
+	store, err := a.store()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return nil, false
+	}
+	return store, true
 }
 
 func newSimpleResourceID() (string, error) {
