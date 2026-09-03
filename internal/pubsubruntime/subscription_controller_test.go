@@ -25,20 +25,23 @@ func TestSubscriptionControllerOwnsActivationLifetime(t *testing.T) {
 
 	var activationCtx context.Context
 	var dispatch func(string)
-	var delivered int
+	delivered := make(chan string, 2)
 	runtime := newWithDependencies(client, store, func(ctx context.Context, _ *redis.Client, _ string, onMessage func(string)) Subscriber {
 		activationCtx = ctx
 		dispatch = onMessage
 		return newFakeSubscriber()
-	}, func(context.Context, string, string) error {
-		delivered++
+	}, func(_ context.Context, _ string, payload string) error {
+		delivered <- payload
 		return nil
 	})
 	controller, err := NewSubscriptionController(runtime)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(controller.Close)
+	t.Cleanup(func() {
+		controller.Close()
+		runtime.Close()
+	})
 
 	requestCtx, cancelRequest := context.WithCancel(context.Background())
 	if err := controller.ActivateSubscription(requestCtx, "sub-a"); err != nil {
@@ -55,8 +58,18 @@ func TestSubscriptionControllerOwnsActivationLifetime(t *testing.T) {
 		t.Fatalf("reconcile ActivateSubscription: %v", err)
 	}
 	dispatch("first")
-	if delivered != 1 {
-		t.Fatalf("deliveries=%d want 1; reconciliation installed multiple handlers", delivered)
+	select {
+	case got := <-delivered:
+		if got != "first" {
+			t.Fatalf("delivery=%q want first", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("reconciled Subscription did not receive delivery")
+	}
+	select {
+	case got := <-delivered:
+		t.Fatalf("reconciliation installed duplicate handler; extra delivery=%q", got)
+	case <-time.After(20 * time.Millisecond):
 	}
 
 	if err := controller.ShutdownSubscription(context.Background(), "sub-a"); err != nil {
@@ -69,11 +82,12 @@ func TestSubscriptionControllerOwnsActivationLifetime(t *testing.T) {
 		t.Fatalf("idempotent declared-inactive ShutdownSubscription: %v", err)
 	}
 	dispatch("second")
-	if delivered != 1 {
-		t.Fatalf("shutdown subscription still received delivery; deliveries=%d", delivered)
+	select {
+	case got := <-delivered:
+		t.Fatalf("shutdown Subscription received delivery=%q", got)
+	case <-time.After(20 * time.Millisecond):
 	}
 
-	controller.Close()
 	select {
 	case <-activationCtx.Done():
 	default:
@@ -103,7 +117,10 @@ func TestSubscriptionControllerWaitsForInitialRedisReadiness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer controller.Close()
+	defer func() {
+		controller.Close()
+		runtime.Close()
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
@@ -112,6 +129,62 @@ func TestSubscriptionControllerWaitsForInitialRedisReadiness(t *testing.T) {
 	}
 	if runtime.Active("events") {
 		t.Fatal("failed initial readiness left an empty Redis listener active")
+	}
+}
+
+func TestSubscriptionControllerInstallsHandlerBeforeReadyAcknowledgement(t *testing.T) {
+	store := fakeStore{
+		channels: map[string]pubsubmodel.Channel{"events": {Name: "events"}},
+		subscribers: map[string]pubsubmodel.Subscriber{
+			"sub-a": {ID: "sub-a", Channel: "events", CallbackIDs: []string{"callback-a"}},
+		},
+		callbacks: map[string]pubsubmodel.Callback{
+			"callback-a": {ID: "callback-a", Type: pubsubmodel.CallbackWebhook, Webhook: &pubsubmodel.WebhookCallback{CallbackURL: "https://one.example/callback"}},
+		},
+	}
+	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:0"})
+	t.Cleanup(func() { _ = client.Close() })
+
+	ready := make(chan struct{})
+	stopped := make(chan struct{})
+	dispatchReady := make(chan func(string), 1)
+	delivered := make(chan string, 1)
+	runtime := newWithDependencies(client, store, func(_ context.Context, _ *redis.Client, _ string, onMessage func(string)) Subscriber {
+		dispatchReady <- onMessage
+		return &fakeSubscriber{ready: ready, stopped: stopped}
+	}, func(_ context.Context, _ string, payload string) error {
+		delivered <- payload
+		return nil
+	})
+	controller, err := NewSubscriptionController(runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		controller.Close()
+		runtime.Close()
+	}()
+
+	result := make(chan error, 1)
+	go func() {
+		result <- controller.ActivateSubscription(context.Background(), "sub-a")
+	}()
+	dispatch := <-dispatchReady
+
+	// Simulate a message arriving immediately as Redis acknowledges SUBSCRIBE.
+	// The handler must already be installed before readiness can unblock the API.
+	dispatch("first-after-ack")
+	close(ready)
+	if err := <-result; err != nil {
+		t.Fatalf("ActivateSubscription: %v", err)
+	}
+	select {
+	case got := <-delivered:
+		if got != "first-after-ack" {
+			t.Fatalf("delivery=%q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("message at readiness boundary was lost before handler installation")
 	}
 }
 
@@ -144,4 +217,5 @@ func TestSubscriptionControllerRejectsMissingAndClosedResources(t *testing.T) {
 	if err := controller.ShutdownSubscription(context.Background(), "missing"); err == nil {
 		t.Fatal("closed controller accepted shutdown")
 	}
+	runtime.Close()
 }
