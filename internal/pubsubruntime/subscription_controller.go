@@ -126,6 +126,12 @@ func (c *SubscriptionController) activate(ctx context.Context, id string, preser
 		}
 	}
 
+	cleanupOperationListener := func() {
+		if channelHandle != nil {
+			c.runtime.deactivateIfIdle(subscriber.Channel, channelHandle.activation)
+		}
+	}
+
 	if preserveExisting {
 		// A reconciliation already has a known-good handler. If the target is a
 		// newly-created listener (for example after a Channel move), keep the old
@@ -133,12 +139,18 @@ func (c *SubscriptionController) activate(ctx context.Context, id string, preser
 		// established listener Ready is intentionally only historical initial
 		// readiness; go-redis owns transparent reconnect/resubscribe afterward.
 		if err := c.runtime.WaitReady(ctx, subscriber.Channel); err != nil {
-			if channelHandle != nil {
-				c.runtime.deactivateIfIdle(subscriber.Channel, channelHandle.activation)
-			}
+			cleanupOperationListener()
 			return nil, err
 		}
-		return c.runtime.AttachSubscriber(ctx, id)
+		newHandle, err := c.runtime.AttachSubscriber(ctx, id)
+		if err != nil {
+			// The target listener may have become ready before Callback material
+			// changed or disappeared. If this operation created that listener and
+			// no handler was attached, do not leak an empty listener.
+			cleanupOperationListener()
+			return nil, err
+		}
+		return newHandle, nil
 	}
 
 	// First activation has no known-good handler to preserve. Install before
@@ -146,9 +158,7 @@ func (c *SubscriptionController) activate(ctx context.Context, id string, preser
 	// soon as SUBSCRIBE is acknowledged.
 	newHandle, err := c.runtime.AttachSubscriber(ctx, id)
 	if err != nil {
-		if channelHandle != nil {
-			c.runtime.deactivateIfIdle(subscriber.Channel, channelHandle.activation)
-		}
+		cleanupOperationListener()
 		return nil, err
 	}
 	if err := c.runtime.WaitReady(ctx, subscriber.Channel); err != nil {
