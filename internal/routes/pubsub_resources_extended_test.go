@@ -164,7 +164,7 @@ func TestPublisherReconcileRouteRequiresExplicitComposition(t *testing.T) {
 
 	reconciler := &fakePublisherReconciler{}
 	api := &pubSubResourceAPI{
-		store: func() (pubSubResourceStore, error) { return store, nil },
+		store:      func() (pubSubResourceStore, error) { return store, nil },
 		reconciler: reconciler,
 	}
 	configured := newPubSubResourceRouter(api)
