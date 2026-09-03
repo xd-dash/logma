@@ -13,10 +13,9 @@ type subscriptionOperation struct {
 }
 
 // SubscriptionController translates the operator-level activate/shutdown
-// operation into Runtime handle management. It owns activation lifetime so an
-// HTTP request context ending does not tear down a successfully activated
-// subscription. Operations for different Subscriber identities are independent;
-// only concurrent operations for the same identity are serialized.
+// operation into Subscriber handle management. Runtime owns shared Channel
+// listener lifetime; the controller owns only its Subscriber handles and the
+// cancellation of commands currently executing through it.
 type SubscriptionController struct {
 	runtime *Runtime
 	ctx     context.Context
@@ -42,12 +41,19 @@ func NewSubscriptionController(runtime *Runtime) (*SubscriptionController, error
 	}, nil
 }
 
+func (c *SubscriptionController) operationContext(requestCtx context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(requestCtx)
+	stop := context.AfterFunc(c.ctx, cancel)
+	return ctx, func() {
+		stop()
+		cancel()
+	}
+}
+
 // ActivateSubscription is ensure-current rather than merely ensure-present.
-// Repeated activation re-reads the Subscriber and Callback declarations. Every
-// operation acquires an internal temporary lease on its target Channel listener,
-// so unrelated Subscription operations that converge on the same new Channel
-// cannot cancel one another's empty-but-in-progress listener. Same-identity
-// operations serialize; different identities remain independent.
+// Same-identity operations serialize. A caller arriving behind successful work
+// re-reads current desired state instead of assuming the peer reconciled the
+// declaration it now observes. Different identities remain independent.
 func (c *SubscriptionController) ActivateSubscription(ctx context.Context, id string) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -66,6 +72,8 @@ func (c *SubscriptionController) ActivateSubscription(ctx context.Context, id st
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
+			case <-c.ctx.Done():
+				return errors.New("subscription controller is closed")
 			case <-done:
 				if pending.err != nil {
 					return pending.err
@@ -76,9 +84,12 @@ func (c *SubscriptionController) ActivateSubscription(ctx context.Context, id st
 		pending := &subscriptionOperation{done: make(chan struct{})}
 		c.pending[id] = pending
 		oldHandle := c.active[id]
+		preserveExisting := oldHandle != nil && oldHandle.current()
 		c.mu.Unlock()
 
-		newHandle, err := c.activate(ctx, id, oldHandle != nil)
+		operationCtx, cancelOperation := c.operationContext(ctx)
+		newHandle, err := c.activate(operationCtx, id, preserveExisting)
+		cancelOperation()
 
 		c.mu.Lock()
 		if err == nil && c.closed {
@@ -110,32 +121,28 @@ func (c *SubscriptionController) activate(ctx context.Context, id string, preser
 	if err != nil {
 		return nil, err
 	}
-	if _, err := c.runtime.store.GetChannel(ctx, subscriber.Channel); err != nil {
-		return nil, err
-	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	// Always acquire a temporary internal lease, even when the listener already
-	// exists. This removes the Active()->Activate check-then-act race without
-	// changing the low-level Channel Handle.Close force-deactivate contract.
-	lease, err := c.runtime.acquireListener(c.ctx, subscriber.Channel)
+	// The lease is an exact listener-generation capability. From this point on,
+	// readiness and attachment must operate through the lease rather than by
+	// looking the Channel name up again.
+	lease, err := c.runtime.acquireListener(ctx, subscriber.Channel)
 	if err != nil {
 		return nil, err
 	}
 	defer lease.Close()
 
 	if preserveExisting {
-		// A reconciliation already has a known-good handler. If the target is a
-		// newly-created listener (for example after a Channel move), keep the old
-		// handler until that target receives its initial ACK. For an already-
-		// established listener Ready is intentionally only historical initial
-		// readiness; go-redis owns transparent reconnect/resubscribe afterward.
-		if err := c.runtime.WaitReady(ctx, subscriber.Channel); err != nil {
+		// Keep the previous known-good handler until the replacement target has
+		// reached its initial readiness boundary. If the leased generation is
+		// force-deactivated or replaced, WaitReady fails rather than migrating to
+		// another generation with the same logical Channel name.
+		if err := lease.WaitReady(ctx); err != nil {
 			return nil, err
 		}
-		newHandle, err := c.runtime.AttachSubscriber(ctx, id)
+		newHandle, err := lease.AttachSubscriber(ctx, id)
 		if err != nil {
 			return nil, err
 		}
@@ -144,12 +151,13 @@ func (c *SubscriptionController) activate(ctx context.Context, id string, preser
 
 	// First activation has no known-good handler to preserve. Install before
 	// waiting for the initial Redis acknowledgement because Redis may deliver as
-	// soon as SUBSCRIBE is acknowledged.
-	newHandle, err := c.runtime.AttachSubscriber(ctx, id)
+	// soon as SUBSCRIBE is acknowledged. Failure detaches the staged handler;
+	// releasing the final lease then removes an otherwise-idle listener.
+	newHandle, err := lease.AttachSubscriber(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	if err := c.runtime.WaitReady(ctx, subscriber.Channel); err != nil {
+	if err := lease.WaitReady(ctx); err != nil {
 		newHandle.Close()
 		return nil, err
 	}
@@ -159,8 +167,7 @@ func (c *SubscriptionController) activate(ctx context.Context, id string, preser
 // ShutdownSubscription is idempotent for a declared but already-inactive
 // Subscription. A missing durable declaration remains distinguishable as
 // ErrNotFound so weak Group execution can report it as missing rather than
-// falsely claiming a completed shutdown. Closing the last handler also releases
-// the shared Redis listener; durable Channel existence remains independent.
+// falsely claiming a completed shutdown.
 func (c *SubscriptionController) ShutdownSubscription(ctx context.Context, id string) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -179,6 +186,8 @@ func (c *SubscriptionController) ShutdownSubscription(ctx context.Context, id st
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
+			case <-c.ctx.Done():
+				return errors.New("subscription controller is closed")
 			case <-done:
 				continue
 			}
@@ -200,9 +209,10 @@ func (c *SubscriptionController) ShutdownSubscription(ctx context.Context, id st
 	}
 }
 
-// Close is idempotent. It detaches controller-owned Subscriber handlers and
-// cancels Channel listeners that were started with the controller lifetime.
-// In-flight activations observe the closed state before publishing their handle.
+// Close is idempotent. It cancels in-flight controller commands and detaches
+// controller-owned Subscriber handles. Shared Channel listener lifetime remains
+// Runtime-owned and is released only by the normal zero-handler/zero-lease rule,
+// explicit force-deactivation, transport terminal failure, or Runtime.Close.
 func (c *SubscriptionController) Close() {
 	c.mu.Lock()
 	if c.closed {
