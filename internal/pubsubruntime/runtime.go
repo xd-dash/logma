@@ -179,14 +179,23 @@ func newWithDependencies(client *redis.Client, store ResourceStore, subscribe su
 // The caller context bounds declaration lookup only; once created, the listener
 // is owned by Runtime rather than by whichever request happened to create it.
 func (r *Runtime) Activate(ctx context.Context, name string, onMessage func(string)) (*Handle, error) {
+	name = strings.TrimSpace(name)
 	activation, err := r.ensureListener(ctx, name)
 	if err != nil {
 		return nil, err
 	}
+
+	r.mu.Lock()
+	current, ok := r.active[name]
+	if r.closed || !ok || current != activation || activation.ctx.Err() != nil {
+		r.mu.Unlock()
+		return nil, fmt.Errorf("channel %s listener generation became unavailable during activation", name)
+	}
 	if onMessage != nil {
 		activation.putHandler("__channel__", onMessage)
 	}
-	return &Handle{runtime: r, channel: strings.TrimSpace(name), activation: activation, sub: activation.subscriber}, nil
+	r.mu.Unlock()
+	return &Handle{runtime: r, channel: name, activation: activation, sub: activation.subscriber}, nil
 }
 
 func (r *Runtime) acquireListener(ctx context.Context, name string) (*listenerLease, error) {
@@ -198,7 +207,7 @@ func (r *Runtime) acquireListener(ctx context.Context, name string) (*listenerLe
 
 	r.mu.Lock()
 	current, ok := r.active[name]
-	if !ok || current != activation || r.closed {
+	if !ok || current != activation || r.closed || activation.ctx.Err() != nil {
 		r.mu.Unlock()
 		return nil, errors.New("listener became unavailable during acquisition")
 	}
@@ -252,10 +261,17 @@ func waitReadyActivation(ctx context.Context, channel string, activation *channe
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-activation.ctx.Done():
+		if err := activation.subscriber.LastError(); err != nil {
+			return fmt.Errorf("channel %s listener generation canceled before ready: %w", channel, err)
+		}
+		return fmt.Errorf("channel %s listener generation canceled before ready", channel)
 	case <-activation.subscriber.Stopped():
 		return stoppedError()
 	case <-activation.subscriber.Ready():
 		select {
+		case <-activation.ctx.Done():
+			return fmt.Errorf("channel %s listener generation canceled at readiness boundary", channel)
 		case <-activation.subscriber.Stopped():
 			return stoppedError()
 		default:
@@ -268,7 +284,7 @@ func (r *Runtime) generationCurrent(channel string, activation *channelActivatio
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	current, ok := r.active[channel]
-	return !r.closed && ok && current == activation
+	return !r.closed && ok && current == activation && activation.ctx.Err() == nil
 }
 
 func (r *Runtime) WaitReady(ctx context.Context, name string) error {
@@ -332,6 +348,10 @@ func (r *Runtime) attachSubscriberTo(ctx context.Context, id, channel string, ac
 	if !ok || current != activation {
 		r.mu.Unlock()
 		return nil, fmt.Errorf("channel %s listener generation changed before subscriber attachment", channel)
+	}
+	if err := activation.ctx.Err(); err != nil {
+		r.mu.Unlock()
+		return nil, fmt.Errorf("channel %s listener generation is stopping: %w", channel, err)
 	}
 	subscriberCtx, cancel := context.WithCancel(activation.ctx)
 	handler := func(payload string) {
@@ -441,7 +461,7 @@ func (r *Runtime) subscriberHandleCurrent(handle *SubscriberHandle) bool {
 	}
 	r.mu.Lock()
 	current, ok := r.active[handle.channel]
-	if !ok || current != handle.activation || r.closed {
+	if !ok || current != handle.activation || r.closed || handle.activation.ctx.Err() != nil {
 		r.mu.Unlock()
 		return false
 	}
@@ -453,8 +473,8 @@ func (r *Runtime) subscriberHandleCurrent(handle *SubscriberHandle) bool {
 func (r *Runtime) Active(name string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	_, ok := r.active[strings.TrimSpace(name)]
-	return ok
+	activation, ok := r.active[strings.TrimSpace(name)]
+	return ok && activation.ctx.Err() == nil
 }
 
 // Close owns runtime cleanup: all active transport listeners are canceled and
@@ -486,6 +506,9 @@ func (h *Handle) LastError() error         { return h.sub.LastError() }
 func (h *Handle) Close() bool              { return h.runtime.deactivateActivation(h.channel, h.activation) }
 
 func (l *listenerLease) WaitReady(ctx context.Context) error {
+	if !l.runtime.generationCurrent(l.channel, l.activation) {
+		return fmt.Errorf("channel %s listener generation is no longer current", l.channel)
+	}
 	if err := waitReadyActivation(ctx, l.channel, l.activation); err != nil {
 		return err
 	}
