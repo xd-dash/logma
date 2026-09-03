@@ -129,7 +129,7 @@ There is no previous known-good handler:
 load declaration
 -> acquire listener
 -> install handler
--> wait for observed SUBSCRIBE readiness
+-> wait for initial Redis SUBSCRIBE acknowledgement
 -> publish active handle
 -> success
 ```
@@ -138,33 +138,44 @@ The handler is installed before the initial ACK because Redis may deliver immedi
 
 ### Reconciliation
 
-An already-active Subscription has a previous known-good handler:
+An already-active Subscription has a previous known-good handler. If the replacement points to a new Channel/listener, the old handler stays installed until that new listener completes its initial ACK:
 
 ```text
 keep old handler
 -> load replacement declaration
 -> acquire/locate target listener
--> wait for target listener's observed current readiness
+-> wait for target listener's initial ACK when newly created
 -> install replacement
 -> publish replacement handle
 -> retire old handler
 ```
 
-If lookup or readiness fails, the previous handler remains installed. Same-identity operations serialize; different Subscription identities do not share one controller-wide operation lock.
+If lookup or new-listener readiness fails, the previous handler remains installed. Same-identity operations serialize; different Subscription identities do not share one controller-wide operation lock.
 
-### Readiness
+### Readiness boundary
 
-Readiness is generation-aware at the outer Logma subscription loop. When that loop observes connection loss and enters reconnect, its readiness signal resets; later reconciliation waits for a fresh observed ACK rather than accepting a historical one.
+`Ready()` means **initial SUBSCRIBE acknowledgement for one Subscriber lifetime**. It is deliberately not continuous Redis socket health.
 
-This is an observation boundary, not a durability promise. The network can fail immediately after success. Logma remains best-effort Pub/Sub signaling.
+The pinned `go-redis v9.22.0` PubSub implementation transparently reconnects and re-subscribes after network errors underneath `PubSub.Channel()`. That API does not expose a clean unready edge to Logma before every internal reconnect. Therefore repeated activation on an already-established listener must not be described as a fresh transport-health proof.
 
-`Runtime.Active` or a goroutine existing is not an operator-level readiness proof.
+The meaningful contract is:
+
+```text
+new listener activation success
+  -> initial SUBSCRIBE acknowledgement was observed
+
+later transport interruption
+  -> go-redis reconnect/resubscribe behavior
+  -> best-effort Pub/Sub semantics
+```
+
+`Runtime.Active`, a goroutine, or historical initial readiness is not proof of continuous connectivity. Do not build another socket-health state machine unless a concrete operator requirement needs that stronger guarantee.
 
 ## Request and runtime lifetime
 
 ```text
 request context
-  lookup / validation / readiness deadline
+  lookup / validation / initial-readiness deadline
 
 controller / reconciler / service context
   successful runtime lifetime
@@ -289,4 +300,4 @@ It should stop the locally owned active Subscription, remove its durable Subscri
 
 Only machinery that preserves an observable contract earns complexity budget.
 
-When edge-case guards repeatedly accumulate around an abstraction, reconsider the abstraction before hardening it again. Keep cheap correctness checks; defer speculative repair, distributed ownership, fairness schedulers, new resource nouns, and provider vocabulary until a real consumer requires them.
+When edge-case guards repeatedly accumulate around an abstraction, reconsider the abstraction before hardening it again. Keep cheap correctness checks; defer speculative repair, distributed ownership, fairness schedulers, continuous socket-health state, new resource nouns, and provider vocabulary until a real consumer requires them.
