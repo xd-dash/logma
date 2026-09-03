@@ -72,6 +72,9 @@ func TestRedisStoreGraphRoundTrip(t *testing.T) {
 	assertSet(t, ctx, client, keys.CallbackSubscribers(callbackB.ID), []string{subscriber.ID})
 	assertSet(t, ctx, client, keys.ChannelPublishers(channelA.Name), []string{publisher.ID})
 	assertSet(t, ctx, client, keys.SubscriptionGroupSubscribers(group.ID), []string{subscriber.ID})
+	assertSet(t, ctx, client, keys.Channels(), []string{channelA.Name, channelB.Name})
+	assertSet(t, ctx, client, keys.Callbacks(), []string{callbackA.ID, callbackB.ID})
+	assertSet(t, ctx, client, keys.Subscribers(), []string{subscriber.ID})
 
 	gotChannel, err := store.GetChannel(ctx, channelA.Name)
 	if err != nil || !reflect.DeepEqual(gotChannel, channelA) {
@@ -100,6 +103,12 @@ func TestRedisStoreGraphRoundTrip(t *testing.T) {
 	assertIDs(t, ids, err, []string{publisher.ID})
 	ids, err = store.CallbackSubscriberIDs(ctx, callbackA.ID)
 	assertIDs(t, ids, err, []string{subscriber.ID})
+	ids, err = store.ChannelIDs(ctx)
+	assertIDs(t, ids, err, []string{channelA.Name, channelB.Name})
+	ids, err = store.CallbackIDs(ctx)
+	assertIDs(t, ids, err, []string{callbackA.ID, callbackB.ID})
+	ids, err = store.SubscriberIDs(ctx)
+	assertIDs(t, ids, err, []string{subscriber.ID})
 
 	updatedSubscriber := Subscriber{ID: subscriber.ID, Channel: channelB.Name, CallbackIDs: []string{callbackB.ID}}
 	if err := store.PutSubscriber(ctx, updatedSubscriber); err != nil {
@@ -121,10 +130,13 @@ func TestRedisStoreGraphRoundTrip(t *testing.T) {
 	if err := store.DeleteChannel(ctx, channelB.Name); err == nil {
 		t.Fatal("DeleteChannel succeeded while channel remained referenced")
 	}
+	assertSet(t, ctx, client, keys.Callbacks(), []string{callbackA.ID, callbackB.ID})
+	assertSet(t, ctx, client, keys.Channels(), []string{channelA.Name, channelB.Name})
 
 	if err := store.DeleteSubscriber(ctx, subscriber.ID); err != nil {
 		t.Fatalf("delete subscriber: %v", err)
 	}
+	assertSet(t, ctx, client, keys.Subscribers(), nil)
 	if _, err := store.GetSubscriber(ctx, subscriber.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetSubscriber after delete error = %v, want ErrNotFound", err)
 	}
@@ -170,7 +182,7 @@ func assertHash(t *testing.T, ctx context.Context, client *redis.Client, key str
 }
 
 func assertSet(t *testing.T, ctx context.Context, client *redis.Client, key string, want []string) {
-	t.Helper()
+	 t.Helper()
 	got, err := client.SMembers(ctx, key).Result()
 	if err != nil {
 		t.Fatalf("SMEMBERS %s: %v", key, err)
