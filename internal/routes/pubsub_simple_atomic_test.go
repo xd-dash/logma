@@ -2,7 +2,6 @@ package routes
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -73,7 +72,7 @@ func TestSimplePubSubSubscribeDoesNotPartiallyMutateOnSubscriberConflict(t *test
 
 func TestSimpleGroupOperationClassifiesControllerNotFoundAsMissing(t *testing.T) {
 	store := newFakePubSubResourceStore()
-	store.subscriptionGroups = map[string]pubsubmodel.SubscriptionGroup{
+	fakeSubscriptionGroups[store] = map[string]pubsubmodel.SubscriptionGroup{
 		"morning": {ID: "morning", SubscriberIDs: []string{"gone"}},
 	}
 	controller := &fakeSimpleSubscriptionController{fail: map[string]error{"gone": pubsubmodel.ErrNotFound}}
@@ -89,5 +88,3 @@ func TestSimpleGroupOperationClassifiesControllerNotFoundAsMissing(t *testing.T)
 		t.Fatalf("missing member was misclassified as failed: %s", resp.Body.String())
 	}
 }
-
-var _ = errors.Is
