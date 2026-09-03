@@ -12,16 +12,12 @@ import (
 	serverlesspubsub "github.com/xd-dash/logma/serverless/pubsub"
 )
 
-// ResourceStore is the persisted control-plane boundary required by runtime
-// Channel and Subscriber activation. Runtime state never manufactures these
-// durable resources implicitly.
 type ResourceStore interface {
 	GetChannel(context.Context, string) (pubsubmodel.Channel, error)
 	GetSubscriber(context.Context, string) (pubsubmodel.Subscriber, error)
 	GetCallback(context.Context, string) (pubsubmodel.Callback, error)
 }
 
-// Subscriber is the small runtime surface needed from the Redis listener.
 type Subscriber interface {
 	Ready() <-chan struct{}
 	Stopped() <-chan struct{}
@@ -29,14 +25,8 @@ type Subscriber interface {
 }
 
 type subscribeFunc func(context.Context, *redis.Client, string, func(string)) Subscriber
-
 type webhookSender func(context.Context, string, string) error
 
-// Runtime activates persisted Logma Channel resources independently of
-// Callback and Subscriber resources. A Channel with no callbacks is therefore
-// still a valid active Redis listener. Subscriber attachments add delivery
-// handlers to that single instance-local listener rather than opening another
-// Redis subscription.
 type Runtime struct {
 	client      *redis.Client
 	store       ResourceStore
@@ -47,61 +37,66 @@ type Runtime struct {
 	active map[string]*channelActivation
 }
 
+type handlerEntry struct {
+	token uint64
+	fn    func(string)
+}
+
 type channelActivation struct {
+	ctx        context.Context
 	cancel     context.CancelFunc
 	subscriber Subscriber
 
-	mu       sync.RWMutex
-	handlers map[string]func(string)
+	mu        sync.RWMutex
+	nextToken uint64
+	handlers  map[string]handlerEntry
 }
 
 func (a *channelActivation) dispatch(payload string) {
 	a.mu.RLock()
 	handlers := make([]func(string), 0, len(a.handlers))
 	for _, handler := range a.handlers {
-		handlers = append(handlers, handler)
+		handlers = append(handlers, handler.fn)
 	}
 	a.mu.RUnlock()
-
 	for _, handler := range handlers {
 		handler(payload)
 	}
 }
 
-func (a *channelActivation) putHandler(id string, handler func(string)) bool {
+func (a *channelActivation) putHandler(id string, handler func(string)) uint64 {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	_, existed := a.handlers[id]
-	a.handlers[id] = handler
-	return !existed
+	a.nextToken++
+	token := a.nextToken
+	a.handlers[id] = handlerEntry{token: token, fn: handler}
+	return token
 }
 
-func (a *channelActivation) removeHandler(id string) bool {
+func (a *channelActivation) removeHandler(id string, token uint64) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if _, ok := a.handlers[id]; !ok {
+	entry, ok := a.handlers[id]
+	if !ok || entry.token != token {
 		return false
 	}
 	delete(a.handlers, id)
 	return true
 }
 
-// Handle is an instance-local Channel activation handle. Closing it
-// deactivates only this Runtime's listener; it does not delete the persisted
-// Channel resource.
 type Handle struct {
-	runtime *Runtime
-	channel string
-	sub     Subscriber
+	runtime    *Runtime
+	channel    string
+	activation *channelActivation
+	sub        Subscriber
 }
 
-// SubscriberHandle is an instance-local delivery attachment. Closing it
-// removes runtime delivery only; it does not delete the persisted Subscriber
-// or Callback resources.
 type SubscriberHandle struct {
 	runtime      *Runtime
 	channel      string
+	activation   *channelActivation
 	subscriberID string
+	token        uint64
 }
 
 func New(client *redis.Client, store ResourceStore) (*Runtime, error) {
@@ -111,14 +106,9 @@ func New(client *redis.Client, store ResourceStore) (*Runtime, error) {
 	if store == nil {
 		return nil, errors.New("resource store is required")
 	}
-	return newWithDependencies(
-		client,
-		store,
-		func(ctx context.Context, client *redis.Client, channel string, onMessage func(string)) Subscriber {
-			return serverlesspubsub.Subscribe(ctx, client, channel, onMessage)
-		},
-		postWebhook,
-	), nil
+	return newWithDependencies(client, store, func(ctx context.Context, client *redis.Client, channel string, onMessage func(string)) Subscriber {
+		return serverlesspubsub.Subscribe(ctx, client, channel, onMessage)
+	}, postWebhook), nil
 }
 
 func newWithDependencies(client *redis.Client, store ResourceStore, subscribe subscribeFunc, sendWebhook webhookSender) *Runtime {
@@ -131,9 +121,6 @@ func newWithDependencies(client *redis.Client, store ResourceStore, subscribe su
 	}
 }
 
-// Activate verifies that the Channel exists in the persisted resource graph,
-// then starts one instance-local Redis listener. onMessage may be nil when the
-// caller only needs an active Channel with zero callbacks.
 func (r *Runtime) Activate(ctx context.Context, name string, onMessage func(string)) (*Handle, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -146,27 +133,28 @@ func (r *Runtime) Activate(ctx context.Context, name string, onMessage func(stri
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if activation, ok := r.active[name]; ok {
-		return &Handle{runtime: r, channel: name, sub: activation.subscriber}, nil
+		if onMessage != nil {
+			activation.putHandler("__channel__", onMessage)
+		}
+		return &Handle{runtime: r, channel: name, activation: activation, sub: activation.subscriber}, nil
 	}
 
 	subCtx, cancel := context.WithCancel(ctx)
 	activation := &channelActivation{
+		ctx:      subCtx,
 		cancel:   cancel,
-		handlers: make(map[string]func(string)),
+		handlers: make(map[string]handlerEntry),
 	}
 	if onMessage != nil {
-		activation.handlers["__channel__"] = onMessage
+		activation.putHandler("__channel__", onMessage)
 	}
 	activation.subscriber = r.subscribe(subCtx, r.client, name, activation.dispatch)
 	r.active[name] = activation
 
-	go r.removeWhenStopped(name, activation.subscriber)
-	return &Handle{runtime: r, channel: name, sub: activation.subscriber}, nil
+	go r.removeWhenStopped(name, activation)
+	return &Handle{runtime: r, channel: name, activation: activation, sub: activation.subscriber}, nil
 }
 
-// AttachSubscriber resolves one persisted Subscriber and its Callback
-// resources, then attaches its delivery behavior to an already-active Channel.
-// This first runtime slice supports webhook callbacks only.
 func (r *Runtime) AttachSubscriber(ctx context.Context, id string) (*SubscriberHandle, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -192,29 +180,37 @@ func (r *Runtime) AttachSubscriber(ctx context.Context, id string) (*SubscriberH
 
 	r.mu.Lock()
 	activation, ok := r.active[subscriber.Channel]
-	r.mu.Unlock()
 	if !ok {
+		r.mu.Unlock()
 		return nil, fmt.Errorf("channel %s is not active", subscriber.Channel)
 	}
-
 	handler := func(payload string) {
 		for _, url := range urls {
-			if err := r.sendWebhook(context.Background(), url, payload); err != nil {
+			if err := r.sendWebhook(activation.ctx, url, payload); err != nil && !errors.Is(err, context.Canceled) {
 				fmt.Printf("Subscriber %s webhook %s failed: %v\n", subscriber.ID, url, err)
 			}
 		}
 	}
-	activation.putHandler(subscriber.ID, handler)
-	return &SubscriberHandle{runtime: r, channel: subscriber.Channel, subscriberID: subscriber.ID}, nil
+	token := activation.putHandler(subscriber.ID, handler)
+	r.mu.Unlock()
+
+	return &SubscriberHandle{
+		runtime:      r,
+		channel:      subscriber.Channel,
+		activation:   activation,
+		subscriberID: subscriber.ID,
+		token:        token,
+	}, nil
 }
 
-func (r *Runtime) removeWhenStopped(name string, sub Subscriber) {
-	<-sub.Stopped()
+func (r *Runtime) removeWhenStopped(name string, activation *channelActivation) {
+	<-activation.subscriber.Stopped()
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if activation, ok := r.active[name]; ok && activation.subscriber == sub {
+	if current, ok := r.active[name]; ok && current == activation {
 		delete(r.active, name)
 	}
+	r.mu.Unlock()
+	activation.cancel()
 }
 
 func (r *Runtime) Deactivate(name string) bool {
@@ -232,14 +228,29 @@ func (r *Runtime) Deactivate(name string) bool {
 	return true
 }
 
-func (r *Runtime) detachSubscriber(channel, subscriberID string) bool {
+func (r *Runtime) deactivateActivation(channel string, activation *channelActivation) bool {
 	r.mu.Lock()
-	activation, ok := r.active[channel]
-	r.mu.Unlock()
-	if !ok {
+	current, ok := r.active[channel]
+	if !ok || current != activation {
+		r.mu.Unlock()
 		return false
 	}
-	return activation.removeHandler(subscriberID)
+	delete(r.active, channel)
+	r.mu.Unlock()
+	activation.cancel()
+	return true
+}
+
+func (r *Runtime) detachSubscriber(channel string, activation *channelActivation, subscriberID string, token uint64) bool {
+	r.mu.Lock()
+	current, ok := r.active[channel]
+	if !ok || current != activation {
+		r.mu.Unlock()
+		return false
+	}
+	removed := activation.removeHandler(subscriberID, token)
+	r.mu.Unlock()
+	return removed
 }
 
 func (r *Runtime) Active(name string) bool {
@@ -252,8 +263,8 @@ func (r *Runtime) Active(name string) bool {
 func (h *Handle) Ready() <-chan struct{}   { return h.sub.Ready() }
 func (h *Handle) Stopped() <-chan struct{} { return h.sub.Stopped() }
 func (h *Handle) LastError() error         { return h.sub.LastError() }
-func (h *Handle) Close() bool              { return h.runtime.Deactivate(h.channel) }
+func (h *Handle) Close() bool              { return h.runtime.deactivateActivation(h.channel, h.activation) }
 
 func (h *SubscriberHandle) Close() bool {
-	return h.runtime.detachSubscriber(h.channel, h.subscriberID)
+	return h.runtime.detachSubscriber(h.channel, h.activation, h.subscriberID, h.token)
 }
