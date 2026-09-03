@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync/atomic"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -69,7 +70,7 @@ type Runtime struct {
 	invocation   InvocationInfo
 	spec         ServiceSpec
 	redisFromEnv bool
-	lifecycle    *lifecycleGuard
+	lifecycle    atomic.Pointer[lifecycleGuard]
 }
 
 func NewRuntime(client *redis.Client) Runtime { return newRuntime(client, false) }
@@ -116,7 +117,8 @@ func (sr *Runtime) observabilityBase(phase, status string) ObservabilityEvent {
 }
 
 func (sr *Runtime) Publish(channel string, event any) error {
-	exhausted, err := sr.lifecycle.admitPublish(sr.Context())
+	guard := sr.lifecycle.Load()
+	exhausted, err := guard.admitPublish(sr.Context())
 	if err != nil {
 		observed := sr.observabilityBase("publish_admission", "denied")
 		observed.Channel = channel
@@ -129,7 +131,7 @@ func (sr *Runtime) Publish(channel string, event any) error {
 		return fmt.Errorf("marshal %T for %s: %w", event, channel, err)
 	}
 	publishErr := sr.Client.Publish(sr.Context(), channel, data).Err()
-	sr.lifecycle.afterPublish(exhausted)
+	guard.afterPublish(exhausted)
 	observed := sr.observabilityBase("publish", "published")
 	observed.Channel = channel
 	observed.Payload = append(json.RawMessage(nil), data...)
@@ -174,8 +176,11 @@ func (sr *Runtime) Start(ctx context.Context) {
 			if err != nil {
 				return err
 			}
-			sr.lifecycle = guard
-			defer func() { guard.close(); sr.lifecycle = nil }()
+			sr.lifecycle.Store(guard)
+			defer func() {
+				guard.close()
+				sr.lifecycle.CompareAndSwap(guard, nil)
+			}()
 			return work(runCtx)
 		}
 		if err := sr.ControlPlane.Run(sr.Context(), spec); err != nil {
