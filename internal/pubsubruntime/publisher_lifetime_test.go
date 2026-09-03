@@ -21,14 +21,12 @@ func TestPublisherReconcilerRuntimeSurvivesRequestCancellation(t *testing.T) {
 		publisher: pubsubmodel.Publisher{ID: "stonks", Channel: "market", Type: "capture"},
 		channel:   pubsubmodel.Channel{Name: "market"},
 	}
-	events := []string{}
-	channels := &publisherTestActivator{active: true, events: &events}
 	providers := NewPublisherRegistry()
 	provider := &contextCapturingPublisherProvider{}
 	if err := providers.Register("capture", provider); err != nil {
 		t.Fatal(err)
 	}
-	reconciler, err := NewPublisherReconciler(store, channels, providers)
+	reconciler, err := NewPublisherReconciler(store, providers)
 	if err != nil {
 		t.Fatal(err)
 	}
