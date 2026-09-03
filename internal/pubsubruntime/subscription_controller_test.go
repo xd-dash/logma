@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/xd-dash/logma/internal/pubsubmodel"
@@ -61,6 +62,9 @@ func TestSubscriptionControllerOwnsActivationLifetime(t *testing.T) {
 	if err := controller.ShutdownSubscription(context.Background(), "sub-a"); err != nil {
 		t.Fatalf("ShutdownSubscription: %v", err)
 	}
+	if runtime.Active("events") {
+		t.Fatal("last Subscriber shutdown left an empty Redis Channel listener active")
+	}
 	if err := controller.ShutdownSubscription(context.Background(), "sub-a"); err != nil {
 		t.Fatalf("idempotent declared-inactive ShutdownSubscription: %v", err)
 	}
@@ -73,7 +77,41 @@ func TestSubscriptionControllerOwnsActivationLifetime(t *testing.T) {
 	select {
 	case <-activationCtx.Done():
 	default:
-		t.Fatal("controller Close did not cancel controller-owned activation")
+		t.Fatal("last Subscriber shutdown did not cancel controller-owned Channel listener")
+	}
+}
+
+func TestSubscriptionControllerWaitsForInitialRedisReadiness(t *testing.T) {
+	store := fakeStore{
+		channels: map[string]pubsubmodel.Channel{"events": {Name: "events"}},
+		subscribers: map[string]pubsubmodel.Subscriber{
+			"sub-a": {ID: "sub-a", Channel: "events", CallbackIDs: []string{"callback-a"}},
+		},
+		callbacks: map[string]pubsubmodel.Callback{
+			"callback-a": {ID: "callback-a", Type: pubsubmodel.CallbackWebhook, Webhook: &pubsubmodel.WebhookCallback{CallbackURL: "https://one.example/callback"}},
+		},
+	}
+	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:0"})
+	t.Cleanup(func() { _ = client.Close() })
+
+	ready := make(chan struct{})
+	stopped := make(chan struct{})
+	runtime := newWithDependencies(client, store, func(context.Context, *redis.Client, string, func(string)) Subscriber {
+		return &fakeSubscriber{ready: ready, stopped: stopped}
+	}, func(context.Context, string, string) error { return nil })
+	controller, err := NewSubscriptionController(runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer controller.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := controller.ActivateSubscription(ctx, "sub-a"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ActivateSubscription before Redis readiness = %v, want deadline exceeded", err)
+	}
+	if runtime.Active("events") {
+		t.Fatal("failed initial readiness left an empty Redis listener active")
 	}
 }
 
