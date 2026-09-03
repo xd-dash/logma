@@ -169,6 +169,10 @@ func (s *RedisStore) PutPublisher(ctx context.Context, publisher Publisher) erro
 	}, publisherKey, channelKey)
 }
 
+// PutSubscriptionGroup stores a durable, mutable operational collection of
+// Subscriber identities. Group membership is intentionally weak: members may
+// be absent now or later, and membership does not protect a Subscriber from
+// deletion. Operations resolve members when they execute.
 func (s *RedisStore) PutSubscriptionGroup(ctx context.Context, group SubscriptionGroup) error {
 	if err := group.Validate(); err != nil {
 		return err
@@ -177,49 +181,16 @@ func (s *RedisStore) PutSubscriptionGroup(ctx context.Context, group Subscriptio
 	subscribers := uniqueTrimmed(group.SubscriberIDs)
 	groupKey := s.keys.SubscriptionGroup(id)
 	membersKey := s.keys.SubscriptionGroupSubscribers(id)
-	watchKeys := []string{groupKey, membersKey}
-	for _, subscriberID := range subscribers {
-		watchKeys = append(watchKeys, s.keys.Subscriber(subscriberID), s.keys.SubscriberGroups(subscriberID))
-	}
-	return s.watch(ctx, func(tx *redis.Tx) error {
-		oldSubscribers, err := tx.SMembers(ctx, membersKey).Result()
-		if err != nil {
-			return err
-		}
+	_, err := s.client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+		pipe.HSet(ctx, groupKey, map[string]any{"id": id})
+		pipe.Del(ctx, membersKey)
 		if len(subscribers) > 0 {
-			references := make([]string, 0, len(subscribers))
-			for _, subscriberID := range subscribers {
-				references = append(references, s.keys.Subscriber(subscriberID))
-			}
-			exists, err := tx.Exists(ctx, references...).Result()
-			if err != nil {
-				return err
-			}
-			if exists != int64(len(references)) {
-				return fmt.Errorf("%w: subscription group %s references missing subscriber", ErrMissingReference, id)
-			}
+			pipe.SAdd(ctx, membersKey, stringsToAny(subscribers)...)
 		}
-		oldSet := stringSet(oldSubscribers)
-		newSet := stringSet(subscribers)
-		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-			pipe.HSet(ctx, groupKey, map[string]any{"id": id})
-			pipe.Del(ctx, membersKey)
-			if len(subscribers) > 0 {
-				pipe.SAdd(ctx, membersKey, stringsToAny(subscribers)...)
-			}
-			pipe.SAdd(ctx, s.keys.SubscriptionGroups(), id)
-			for subscriberID := range oldSet {
-				if _, retained := newSet[subscriberID]; !retained {
-					pipe.SRem(ctx, s.keys.SubscriberGroups(subscriberID), id)
-				}
-			}
-			for _, subscriberID := range subscribers {
-				pipe.SAdd(ctx, s.keys.SubscriberGroups(subscriberID), id)
-			}
-			return nil
-		})
-		return err
-	}, watchKeys...)
+		pipe.SAdd(ctx, s.keys.SubscriptionGroups(), id)
+		return nil
+	})
+	return err
 }
 
 func uniqueTrimmed(values []string) []string {
