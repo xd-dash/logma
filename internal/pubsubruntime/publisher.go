@@ -26,7 +26,8 @@ type ChannelActivator interface {
 
 // PublisherProvider adapts one producer type (stonks, news, socket, etc.) to
 // the generic Logma Publisher resource. EnsureActive must be idempotent for a
-// stable Publisher identity/configuration.
+// stable Publisher identity/configuration. The supplied context is owned by the
+// reconciler runtime, not by the HTTP request that requested reconciliation.
 type PublisherProvider interface {
 	EnsureActive(context.Context, pubsubmodel.Publisher, pubsubmodel.Channel) error
 }
@@ -68,6 +69,11 @@ type PublisherReconciler struct {
 	store     PublisherStore
 	channels  ChannelActivator
 	providers *PublisherRegistry
+	ctx       context.Context
+	cancel    context.CancelFunc
+
+	mu     sync.Mutex
+	closed bool
 }
 
 func NewPublisherReconciler(store PublisherStore, channels ChannelActivator, providers *PublisherRegistry) (*PublisherReconciler, error) {
@@ -80,7 +86,8 @@ func NewPublisherReconciler(store PublisherStore, channels ChannelActivator, pro
 	if providers == nil {
 		return nil, errors.New("publisher provider registry is required")
 	}
-	return &PublisherReconciler{store: store, channels: channels, providers: providers}, nil
+	ctx, cancel := context.WithCancel(context.Background())
+	return &PublisherReconciler{store: store, channels: channels, providers: providers, ctx: ctx, cancel: cancel}, nil
 }
 
 func (r *PublisherReconciler) Reconcile(ctx context.Context, id string) error {
@@ -100,13 +107,42 @@ func (r *PublisherReconciler) Reconcile(ctx context.Context, id string) error {
 	if !ok {
 		return fmt.Errorf("publisher provider %q is not registered", publisher.Type)
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return errors.New("publisher reconciler is closed")
+	}
+	runtimeCtx := r.ctx
+	r.mu.Unlock()
+
 	if !r.channels.Active(channel.Name) {
-		if _, err := r.channels.Activate(ctx, channel.Name, nil); err != nil {
+		if _, err := r.channels.Activate(runtimeCtx, channel.Name, nil); err != nil {
 			return fmt.Errorf("activate publisher channel %s: %w", channel.Name, err)
 		}
 	}
-	if err := provider.EnsureActive(ctx, publisher, channel); err != nil {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := provider.EnsureActive(runtimeCtx, publisher, channel); err != nil {
 		return fmt.Errorf("activate publisher %s with provider %s: %w", publisher.ID, publisher.Type, err)
 	}
 	return nil
+}
+
+// Close ends reconciler-owned producer/channel lifetime. It is intentionally
+// separate from any individual reconcile request so a successful HTTP command
+// does not become the lifetime owner of the producer it started.
+func (r *PublisherReconciler) Close() {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return
+	}
+	r.closed = true
+	r.cancel()
+	r.mu.Unlock()
 }
