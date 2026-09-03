@@ -67,4 +67,19 @@ func TestRedisStoreCreateWebhookSubscriptionAtomic(t *testing.T) {
 	if exists, _ := client.Exists(ctx, keys.Channel("also-must-not-exist"), keys.Callback("new-hook")).Result(); exists != 0 {
 		t.Fatal("Subscriber conflict left partial Channel/Callback state")
 	}
+
+	if err := client.SAdd(ctx, keys.CallbackURLs("orphan-hook"), "https://stale.example/hook").Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateWebhookSubscription(ctx,
+		Channel{Name: "orphan-channel"},
+		Callback{ID: "orphan-hook", Type: CallbackWebhook, Webhook: &WebhookCallback{CallbackURL: "https://fresh.example/hook"}},
+		Subscriber{ID: "orphan-sub", Channel: "orphan-channel", CallbackIDs: []string{"orphan-hook"}},
+	); !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("orphan Callback material = %v, want ErrAlreadyExists", err)
+	}
+	if exists, _ := client.Exists(ctx, keys.Channel("orphan-channel"), keys.Subscriber("orphan-sub")).Result(); exists != 0 {
+		t.Fatal("orphan Callback material caused partial Channel/Subscriber creation")
+	}
+	assertSet(t, ctx, client, keys.CallbackURLs("orphan-hook"), []string{"https://stale.example/hook"})
 }
