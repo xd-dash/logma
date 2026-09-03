@@ -123,13 +123,23 @@ func (c *SubscriptionController) activate(ctx context.Context, id string) (*Subs
 			return nil, err
 		}
 	}
-	if err := c.runtime.WaitReady(ctx, subscriber.Channel); err != nil {
+
+	// Install the handler before waiting for the initial Redis acknowledgement.
+	// Once SUBSCRIBE is acknowledged, Redis may deliver immediately; attaching
+	// first avoids a post-ACK/pre-handler window in which an operator-visible
+	// activation could lose its first message.
+	newHandle, err := c.runtime.AttachSubscriber(ctx, id)
+	if err != nil {
 		if channelHandle != nil {
 			c.runtime.deactivateIfIdle(subscriber.Channel, channelHandle.activation)
 		}
 		return nil, err
 	}
-	return c.runtime.AttachSubscriber(ctx, id)
+	if err := c.runtime.WaitReady(ctx, subscriber.Channel); err != nil {
+		newHandle.Close()
+		return nil, err
+	}
+	return newHandle, nil
 }
 
 // ShutdownSubscription is idempotent for a declared but already-inactive
