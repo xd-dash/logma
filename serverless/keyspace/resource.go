@@ -21,6 +21,11 @@ type Resource struct {
 	children   []string
 }
 
+func validStructure(part string) bool {
+	part = strings.TrimSpace(part)
+	return part != "" && !strings.ContainsAny(part, ":%*?[]{} \t\r\n")
+}
+
 // NewFamily creates a structural resource family such as
 // <scope>:logma:pubsub:channel. Structural segments are never escaped: callers
 // must supply package-owned, pattern-safe vocabulary.
@@ -34,7 +39,7 @@ func NewFamily(scope Scope, parts ...string) (Family, error) {
 	cleaned := make([]string, len(parts))
 	for i, part := range parts {
 		part = strings.TrimSpace(part)
-		if !validCapability(part) {
+		if !validStructure(part) {
 			return Family{}, fmt.Errorf("invalid resource family segment %q", part)
 		}
 		cleaned[i] = part
@@ -91,7 +96,7 @@ func (r Resource) Child(parts ...string) (Resource, error) {
 	children := append([]string{}, r.children...)
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
-		if !validCapability(part) {
+		if !validStructure(part) {
 			return Resource{}, fmt.Errorf("invalid resource child segment %q", part)
 		}
 		children = append(children, part)
