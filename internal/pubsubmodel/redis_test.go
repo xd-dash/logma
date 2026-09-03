@@ -43,6 +43,30 @@ func TestRedisKeysUseScopeFirstResourceGrammar(t *testing.T) {
 	}
 }
 
+func TestRedisKeysEscapeIdentityDelimiters(t *testing.T) {
+	keys, err := NewRedisKeys("dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := keys.Channel(" global:events "), "dev:logma:pubsub:channel:global%3Aevents"; got != want {
+		t.Fatalf("channel key = %q, want %q", got, want)
+	}
+	if got, want := keys.Callback("hook%3Aone:urls"), "dev:logma:pubsub:callback:hook%253Aone%3Aurls"; got != want {
+		t.Fatalf("callback key = %q, want %q", got, want)
+	}
+
+	if got, reserved := keys.Channel("foo:subscribers"), keys.ChannelSubscribers("foo"); got == reserved {
+		t.Fatalf("channel identity key %q collides with reverse-index key", got)
+	}
+	if got, reserved := keys.Callback("foo:urls"), keys.CallbackURLs("foo"); got == reserved {
+		t.Fatalf("callback identity key %q collides with URL-set key", got)
+	}
+	if got, reserved := keys.Subscriber("foo:callbacks"), keys.SubscriberCallbacks("foo"); got == reserved {
+		t.Fatalf("subscriber identity key %q collides with callback-set key", got)
+	}
+}
+
 func TestRedisKeysRequireExplicitScope(t *testing.T) {
 	for _, scope := range []string{"", " ", ":"} {
 		if _, err := NewRedisKeys(scope); err == nil {
