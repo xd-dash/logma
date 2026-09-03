@@ -9,70 +9,20 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// RedisKeys materializes the scope-first Fatline key grammar for Logma Pub/Sub
-// resources. Resource attributes live in hashes; graph edges and discovery
-// indexes live in sets.
-type RedisKeys struct {
-	scope string
-}
-
-func NewRedisKeys(scope string) (RedisKeys, error) {
-	scope = strings.Trim(strings.TrimSpace(scope), ":")
-	if scope == "" {
-		return RedisKeys{}, errors.New("FATLINE scope is required")
-	}
-	return RedisKeys{scope: scope}, nil
-}
-
-func (k RedisKeys) resource(kind, id string) string {
-	return fmt.Sprintf("%s:logma:pubsub:%s:%s", k.scope, kind, redisKeyIdentity(id))
-}
-
-func redisKeyIdentity(value string) string {
-	value = strings.TrimSpace(value)
-	value = strings.ReplaceAll(value, "%", "%25")
-	return strings.ReplaceAll(value, ":", "%3A")
-}
-
-func (k RedisKeys) registry(kind string) string {
-	return fmt.Sprintf("%s:logma:pubsub:%s", k.scope, kind)
-}
-
-func (k RedisKeys) Channels() string    { return k.registry("channels") }
-func (k RedisKeys) Callbacks() string   { return k.registry("callbacks") }
-func (k RedisKeys) Subscribers() string { return k.registry("subscribers") }
-
-func (k RedisKeys) Channel(name string) string            { return k.resource("channel", strings.TrimSpace(name)) }
-func (k RedisKeys) ChannelSubscribers(name string) string { return k.Channel(name) + ":subscribers" }
-func (k RedisKeys) ChannelPublishers(name string) string  { return k.Channel(name) + ":publishers" }
-func (k RedisKeys) Callback(id string) string             { return k.resource("callback", strings.TrimSpace(id)) }
-func (k RedisKeys) CallbackSubscribers(id string) string  { return k.Callback(id) + ":subscribers" }
-func (k RedisKeys) CallbackURLs(id string) string         { return k.Callback(id) + ":urls" }
-func (k RedisKeys) Subscriber(id string) string {
-	return k.resource("subscriber", strings.TrimSpace(id))
-}
-func (k RedisKeys) SubscriberCallbacks(id string) string { return k.Subscriber(id) + ":callbacks" }
-func (k RedisKeys) Publisher(id string) string           { return k.resource("publisher", strings.TrimSpace(id)) }
-func (k RedisKeys) SubscriptionGroup(id string) string {
-	return k.resource("group", strings.TrimSpace(id))
-}
-func (k RedisKeys) SubscriptionGroupSubscribers(id string) string {
-	return k.SubscriptionGroup(id) + ":subscribers"
-}
-
 // RedisStore persists the Logma Pub/Sub control-plane graph without JSON
 // documents. HTTP serialization is intentionally independent of this storage
-// representation.
+// representation. The store uses the canonical Fatline v2 resource grammar;
+// there is no dual-read or legacy-key fallback on this branch.
 type RedisStore struct {
 	client redis.UniversalClient
-	keys   RedisKeys
+	keys   ResourceKeysV2
 }
 
 func NewRedisStore(client redis.UniversalClient, scope string) (*RedisStore, error) {
 	if client == nil {
 		return nil, errors.New("redis client is required")
 	}
-	keys, err := NewRedisKeys(scope)
+	keys, err := NewResourceKeysV2(scope)
 	if err != nil {
 		return nil, err
 	}
