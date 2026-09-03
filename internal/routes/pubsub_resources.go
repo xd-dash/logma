@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/xd-dash/logma/internal/pubsubmodel"
 )
 
@@ -28,6 +29,22 @@ func newPubSubResourceAPI() *pubSubResourceAPI {
 	return &pubSubResourceAPI{store: func() (pubSubResourceStore, error) {
 		return pubsubmodel.NewRedisStore(client, os.Getenv("FATLINE_SCOPE"))
 	}}
+}
+
+// NewPubSubResourceRouter exposes the additive resource API independently of
+// the legacy /channels compatibility surface. The canonical router can mount
+// this after the resource contract has been qualified without changing legacy
+// active_subscriptions behavior in the same step.
+func NewPubSubResourceRouter() http.Handler {
+	return newPubSubResourceRouter(newPubSubResourceAPI())
+}
+
+func newPubSubResourceRouter(api *pubSubResourceAPI) http.Handler {
+	r := chi.NewRouter()
+	r.Use(middleware.Logger)
+	r.Use(authenticateAPIKey)
+	api.routes(r)
+	return r
 }
 
 func (a *pubSubResourceAPI) routes(r chi.Router) {
