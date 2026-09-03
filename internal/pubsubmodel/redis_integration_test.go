@@ -29,7 +29,7 @@ func TestRedisStoreGraphRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	keys, err := NewRedisKeys(scope)
+	keys, err := NewResourceKeysV2(scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,6 +75,13 @@ func TestRedisStoreGraphRoundTrip(t *testing.T) {
 	assertSet(t, ctx, client, keys.Channels(), []string{channelA.Name, channelB.Name})
 	assertSet(t, ctx, client, keys.Callbacks(), []string{callbackA.ID, callbackB.ID})
 	assertSet(t, ctx, client, keys.Subscribers(), []string{subscriber.ID})
+
+	if got, want := keys.Channels(), scope+":logma:pubsub:registry:channels"; got != want {
+		t.Fatalf("channels registry=%q want %q", got, want)
+	}
+	if got, want := keys.SubscriptionGroup(group.ID), scope+":logma:pubsub:subscription-group:group-a"; got != want {
+		t.Fatalf("subscription group key=%q want %q", got, want)
+	}
 
 	gotChannel, err := store.GetChannel(ctx, channelA.Name)
 	if err != nil || !reflect.DeepEqual(gotChannel, channelA) {
