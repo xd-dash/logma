@@ -154,14 +154,6 @@ func (s *RedisStore) CallbackSubscriberIDs(ctx context.Context, callbackID strin
 	return s.sortedMembers(ctx, s.keys.CallbackSubscribers(callbackID))
 }
 
-func (s *RedisStore) SubscriberGroupIDs(ctx context.Context, subscriberID string) ([]string, error) {
-	subscriberID = normalizeIdentity(subscriberID)
-	if subscriberID == "" {
-		return nil, errors.New("subscriber id is required")
-	}
-	return s.sortedMembers(ctx, s.keys.SubscriberGroups(subscriberID))
-}
-
 func (s *RedisStore) sortedMembers(ctx context.Context, key string) ([]string, error) {
 	members, err := s.client.SMembers(ctx, key).Result()
 	if err != nil && err != redis.Nil {
