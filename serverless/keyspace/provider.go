@@ -84,15 +84,17 @@ func logmaPubSubGraphRequirements(scope Scope, access Access) (RedisRequirements
 		)
 	}
 	if access&AccessWrite != 0 {
-		// Subscriber/publisher graph reconciliation uses optimistic WATCH plus
-		// MULTI/EXEC and hash/set mutations. No scripting or FUNCTION authority is
-		// implied by graph storage access.
+		// Mutation authority must be self-sufficient. Subscriber/publisher/group
+		// reconciliation and guarded deletes read the existing graph as part of
+		// optimistic WATCH transactions, including SCARD reference checks. These
+		// reads are implementation prerequisites for mutation, not a semantic
+		// grant to the independent read API.
 		req.Commands = append(req.Commands,
 			"hset", "hdel",
 			"sadd", "srem",
 			"del",
 			"watch", "unwatch", "multi", "exec", "discard",
-			"exists", "hget", "smembers",
+			"exists", "hget", "smembers", "scard",
 		)
 	}
 	return req, nil
