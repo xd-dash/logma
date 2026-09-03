@@ -23,7 +23,7 @@ func (p *blockingPublisherProvider) EnsureActive(context.Context, pubsubmodel.Pu
 	return nil
 }
 
-func TestPublisherReconcilerCoalescesConcurrentSameIdentity(t *testing.T) {
+func TestPublisherReconcilerSerializesConcurrentSameIdentity(t *testing.T) {
 	store := publisherTestStore{
 		publisher: pubsubmodel.Publisher{ID: "stonks-live", Channel: "market:quotes", Type: "stonks"},
 		channel:   pubsubmodel.Channel{Name: "market:quotes"},
@@ -51,16 +51,16 @@ func TestPublisherReconcilerCoalescesConcurrentSameIdentity(t *testing.T) {
 
 	time.Sleep(20 * time.Millisecond)
 	if got := provider.calls.Load(); got != 1 {
-		t.Fatalf("concurrent same-Publisher reconcile entered provider %d times, want 1", got)
+		t.Fatalf("concurrent same-Publisher reconcile entered provider %d times before first completion, want 1", got)
 	}
 	close(provider.release)
 	if err := <-first; err != nil {
 		t.Fatalf("first reconcile: %v", err)
 	}
 	if err := <-second; err != nil {
-		t.Fatalf("coalesced reconcile: %v", err)
+		t.Fatalf("serialized reconcile: %v", err)
 	}
-	if got := provider.calls.Load(); got != 1 {
-		t.Fatalf("provider calls after completion = %d, want 1", got)
+	if got := provider.calls.Load(); got != 2 {
+		t.Fatalf("provider calls after successful waiter re-read = %d, want 2", got)
 	}
 }
