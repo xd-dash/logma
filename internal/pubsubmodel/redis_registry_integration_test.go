@@ -3,7 +3,6 @@ package pubsubmodel
 import (
 	"context"
 	"os"
-	"reflect"
 	"testing"
 
 	"github.com/redis/go-redis/v9"
@@ -121,7 +120,12 @@ func assertRegistryIDs(t *testing.T, read func() ([]string, error), want []strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(got, want) {
+	if len(got) != len(want) {
 		t.Fatalf("registry IDs = %#v, want %#v", got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("registry IDs = %#v, want %#v", got, want)
+		}
 	}
 }
