@@ -16,6 +16,7 @@ func TestResourceKeysV2MapPubSubGraphToCanonicalFamilies(t *testing.T) {
 		keys.CallbackSubscribers("callback 1"):       "dev-safe:logma:pubsub:callback:callback%201:subscribers",
 		keys.Subscriber("subscriber:1"):              "dev-safe:logma:pubsub:subscriber:subscriber%3A1",
 		keys.SubscriberCallbacks("subscriber:1"):     "dev-safe:logma:pubsub:subscriber:subscriber%3A1:callbacks",
+		keys.SubscriberGroups("subscriber:1"):        "dev-safe:logma:pubsub:subscriber:subscriber%3A1:subscription-groups",
 		keys.Publisher("publisher:1"):                "dev-safe:logma:pubsub:publisher:publisher%3A1",
 		keys.SubscriptionGroup("group:1"):            "dev-safe:logma:pubsub:subscription-group:group%3A1",
 		keys.SubscriptionGroupSubscribers("group:1"): "dev-safe:logma:pubsub:subscription-group:group%3A1:subscribers",
