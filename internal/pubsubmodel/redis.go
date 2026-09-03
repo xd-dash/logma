@@ -86,7 +86,7 @@ func (s *RedisStore) PutSubscriber(ctx context.Context, subscriber Subscriber) e
 	for _, callbackID := range callbacks {
 		watchKeys = append(watchKeys, s.keys.Callback(callbackID))
 	}
-	return s.client.Watch(ctx, func(tx *redis.Tx) error {
+	return s.watch(ctx, func(tx *redis.Tx) error {
 		oldChannel, err := tx.HGet(ctx, subscriberKey, "channel").Result()
 		if err != nil && err != redis.Nil {
 			return err
@@ -139,7 +139,7 @@ func (s *RedisStore) PutPublisher(ctx context.Context, publisher Publisher) erro
 	channel := strings.TrimSpace(publisher.Channel)
 	publisherKey := s.keys.Publisher(id)
 	channelKey := s.keys.Channel(channel)
-	return s.client.Watch(ctx, func(tx *redis.Tx) error {
+	return s.watch(ctx, func(tx *redis.Tx) error {
 		oldChannel, err := tx.HGet(ctx, publisherKey, "channel").Result()
 		if err != nil && err != redis.Nil {
 			return err
@@ -180,7 +180,7 @@ func (s *RedisStore) PutSubscriptionGroup(ctx context.Context, group Subscriptio
 	for _, subscriberID := range subscribers {
 		watchKeys = append(watchKeys, s.keys.Subscriber(subscriberID), s.keys.SubscriberGroups(subscriberID))
 	}
-	return s.client.Watch(ctx, func(tx *redis.Tx) error {
+	return s.watch(ctx, func(tx *redis.Tx) error {
 		oldSubscribers, err := tx.SMembers(ctx, membersKey).Result()
 		if err != nil {
 			return err
