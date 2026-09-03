@@ -3,7 +3,6 @@ package pubsubruntime
 import (
 	"context"
 	"errors"
-	"sync"
 	"testing"
 	"time"
 
@@ -11,57 +10,26 @@ import (
 	"github.com/xd-dash/logma/internal/pubsubmodel"
 )
 
-type generationSubscriber struct {
-	mu      sync.Mutex
-	ready   chan struct{}
-	stopped chan struct{}
-}
-
-func newGenerationSubscriber(ready bool) *generationSubscriber {
-	ch := make(chan struct{})
-	if ready {
-		close(ch)
-	}
-	return &generationSubscriber{ready: ch, stopped: make(chan struct{})}
-}
-
-func (s *generationSubscriber) Ready() <-chan struct{} {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.ready
-}
-func (s *generationSubscriber) Stopped() <-chan struct{} { return s.stopped }
-func (s *generationSubscriber) LastError() error         { return nil }
-func (s *generationSubscriber) markNotReady() {
-	s.mu.Lock()
-	s.ready = make(chan struct{})
-	s.mu.Unlock()
-}
-func (s *generationSubscriber) markReady() {
-	s.mu.Lock()
-	select {
-	case <-s.ready:
-	default:
-		close(s.ready)
-	}
-	s.mu.Unlock()
-}
-
-func TestFailedReconcilePreservesKnownGoodHandler(t *testing.T) {
+func TestFailedReconcileToNewChannelPreservesKnownGoodHandler(t *testing.T) {
 	store := &mutableRuntimeStore{
-		channels:   map[string]pubsubmodel.Channel{"events": {Name: "events"}},
+		channels: map[string]pubsubmodel.Channel{
+			"events":     {Name: "events"},
+			"events-new": {Name: "events-new"},
+		},
 		subscriber: pubsubmodel.Subscriber{ID: "sub-a", Channel: "events", CallbackIDs: []string{"hook"}},
 		callback:   pubsubmodel.Callback{ID: "hook", Type: pubsubmodel.CallbackWebhook, Webhook: &pubsubmodel.WebhookCallback{CallbackURL: "https://old.example/hook"}},
 	}
 	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:0"})
 	t.Cleanup(func() { _ = client.Close() })
 
-	sub := newGenerationSubscriber(true)
-	var dispatch func(string)
+	dispatches := make(map[string]func(string))
 	deliveries := make(chan string, 4)
-	runtime := newWithDependencies(client, store, func(_ context.Context, _ *redis.Client, _ string, onMessage func(string)) Subscriber {
-		dispatch = onMessage
-		return sub
+	runtime := newWithDependencies(client, store, func(_ context.Context, _ *redis.Client, channel string, onMessage func(string)) Subscriber {
+		dispatches[channel] = onMessage
+		if channel == "events-new" {
+			return &fakeSubscriber{ready: make(chan struct{}), stopped: make(chan struct{})}
+		}
+		return newFakeSubscriber()
 	}, func(_ context.Context, url, payload string) error {
 		deliveries <- url + "|" + payload
 		return nil
@@ -78,17 +46,20 @@ func TestFailedReconcilePreservesKnownGoodHandler(t *testing.T) {
 	if err := controller.ActivateSubscription(context.Background(), "sub-a"); err != nil {
 		t.Fatalf("initial activation: %v", err)
 	}
+
+	store.subscriber = pubsubmodel.Subscriber{ID: "sub-a", Channel: "events-new", CallbackIDs: []string{"hook"}}
 	store.callback = pubsubmodel.Callback{ID: "hook", Type: pubsubmodel.CallbackWebhook, Webhook: &pubsubmodel.WebhookCallback{CallbackURL: "https://new.example/hook"}}
-	sub.markNotReady()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	if err := controller.ActivateSubscription(ctx, "sub-a"); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("reconcile during reconnect = %v, want deadline exceeded", err)
+		t.Fatalf("reconcile to unready Channel = %v, want deadline exceeded", err)
+	}
+	if runtime.Active("events-new") {
+		t.Fatal("failed reconciliation left a new empty listener active")
 	}
 
-	sub.markReady()
-	dispatch("after-failed-reconcile")
+	dispatches["events"]("after-failed-reconcile")
 	select {
 	case got := <-deliveries:
 		if got != "https://old.example/hook|after-failed-reconcile" {
