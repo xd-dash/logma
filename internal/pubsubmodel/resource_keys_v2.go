@@ -8,10 +8,10 @@ import (
 	"github.com/xd-dash/logma/serverless/keyspace"
 )
 
-// ResourceKeysV2 maps the Logma Pub/Sub graph onto the canonical Fatline v2
-// resource-address grammar. It is deliberately separate from RedisKeys until
-// the store cutover is qualified, so the compatibility branch remains intact
-// and this branch can compare old/new materialization explicitly.
+// ResourceKeysV2 is the canonical Redis address mapper for the Logma Pub/Sub
+// graph on the Fatline v2 branch. Production RedisStore operations use this
+// mapper directly; legacy persisted naming remains isolated to compatibility
+// lines/providers rather than hidden fallback logic here.
 type ResourceKeysV2 struct {
 	scope keyspace.Scope
 }
@@ -39,7 +39,7 @@ func (k ResourceKeysV2) family(parts ...string) keyspace.Family {
 func (k ResourceKeysV2) resource(kind, id string) string {
 	resource, err := k.family("logma", "pubsub", kind).Resource(id)
 	if err != nil {
-		panic(err) // domain validation rejects empty IDs before persistence
+		panic(err) // public store methods validate/canonicalize identities first
 	}
 	return resource.Key()
 }
