@@ -96,13 +96,17 @@ func (a *channelActivation) handlerCount() int {
 }
 
 type Handle struct {
-	runtime      *Runtime
-	channel      string
-	activation   *channelActivation
-	sub          Subscriber
-	handlerID    string
-	handlerToken uint64
-	once         sync.Once
+	runtime    *Runtime
+	channel    string
+	activation *channelActivation
+	sub        Subscriber
+}
+
+type listenerLease struct {
+	runtime    *Runtime
+	channel    string
+	activation *channelActivation
+	once       sync.Once
 }
 
 type SubscriberHandle struct {
@@ -155,11 +159,40 @@ func newWithDependencies(client *redis.Client, store ResourceStore, subscribe su
 	}
 }
 
-// Activate acquires a temporary lease on a shared Channel listener. Callers
-// release that lease with Handle.Close. The listener remains alive while any
-// lease or runtime handler still needs it, so concurrent activation operations
-// cannot tear down one another's empty-but-in-progress listener.
+// Activate remains the low-level explicit Channel activation/deactivation
+// primitive. Handle.Close retains its historical force-deactivate semantics.
+// Normal SubscriptionController operations use internal listener leases instead
+// so one in-progress reconciliation cannot cancel another operation's listener.
 func (r *Runtime) Activate(ctx context.Context, name string, onMessage func(string)) (*Handle, error) {
+	activation, err := r.ensureListener(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if onMessage != nil {
+		activation.putHandler("__channel__", onMessage)
+	}
+	return &Handle{runtime: r, channel: strings.TrimSpace(name), activation: activation, sub: activation.subscriber}, nil
+}
+
+func (r *Runtime) acquireListener(ctx context.Context, name string) (*listenerLease, error) {
+	name = strings.TrimSpace(name)
+	activation, err := r.ensureListener(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+
+	r.mu.Lock()
+	current, ok := r.active[name]
+	if !ok || current != activation || r.closed {
+		r.mu.Unlock()
+		return nil, errors.New("listener became unavailable during acquisition")
+	}
+	activation.leases++
+	r.mu.Unlock()
+	return &listenerLease{runtime: r, channel: name, activation: activation}, nil
+}
+
+func (r *Runtime) ensureListener(ctx context.Context, name string) (*channelActivation, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, errors.New("channel name is required")
@@ -178,27 +211,15 @@ func (r *Runtime) Activate(ctx context.Context, name string, onMessage func(stri
 		return nil, errors.New("runtime is closed")
 	}
 	if activation, ok := r.active[name]; ok {
-		activation.leases++
-		handle := &Handle{runtime: r, channel: name, activation: activation, sub: activation.subscriber}
-		if onMessage != nil {
-			handle.handlerID = "__channel__"
-			handle.handlerToken = activation.putHandler(handle.handlerID, onMessage)
-		}
-		return handle, nil
+		return activation, nil
 	}
 
 	subCtx, cancel := context.WithCancel(ctx)
-	activation := &channelActivation{ctx: subCtx, cancel: cancel, handlers: make(map[string]handlerEntry), leases: 1}
-	handle := &Handle{runtime: r, channel: name, activation: activation}
-	if onMessage != nil {
-		handle.handlerID = "__channel__"
-		handle.handlerToken = activation.putHandler(handle.handlerID, onMessage)
-	}
+	activation := &channelActivation{ctx: subCtx, cancel: cancel, handlers: make(map[string]handlerEntry)}
 	activation.subscriber = r.subscribe(subCtx, r.client, transportName, activation.dispatch)
-	handle.sub = activation.subscriber
 	r.active[name] = activation
 	go r.removeWhenStopped(name, activation)
-	return handle, nil
+	return activation, nil
 }
 
 func (r *Runtime) WaitReady(ctx context.Context, name string) error {
@@ -290,19 +311,27 @@ func (r *Runtime) Deactivate(name string) bool {
 	return true
 }
 
-func (r *Runtime) releaseHandle(channel string, activation *channelActivation, handlerID string, handlerToken uint64) bool {
+func (r *Runtime) deactivateActivation(channel string, activation *channelActivation) bool {
 	r.mu.Lock()
 	current, ok := r.active[channel]
 	if !ok || current != activation {
 		r.mu.Unlock()
 		return false
 	}
-	if handlerID != "" {
-		activation.removeHandler(handlerID, handlerToken)
+	delete(r.active, channel)
+	r.mu.Unlock()
+	activation.cancel()
+	return true
+}
+
+func (r *Runtime) releaseLease(channel string, activation *channelActivation) bool {
+	r.mu.Lock()
+	current, ok := r.active[channel]
+	if !ok || current != activation || activation.leases == 0 {
+		r.mu.Unlock()
+		return false
 	}
-	if activation.leases > 0 {
-		activation.leases--
-	}
+	activation.leases--
 	idle := activation.leases == 0 && activation.handlerCount() == 0
 	if idle {
 		delete(r.active, channel)
@@ -365,10 +394,11 @@ func (r *Runtime) Close() {
 func (h *Handle) Ready() <-chan struct{}   { return h.sub.Ready() }
 func (h *Handle) Stopped() <-chan struct{} { return h.sub.Stopped() }
 func (h *Handle) LastError() error         { return h.sub.LastError() }
-func (h *Handle) Close() bool {
+func (h *Handle) Close() bool              { return h.runtime.deactivateActivation(h.channel, h.activation) }
+func (l *listenerLease) Close() bool {
 	released := false
-	h.once.Do(func() {
-		released = h.runtime.releaseHandle(h.channel, h.activation, h.handlerID, h.handlerToken)
+	l.once.Do(func() {
+		released = l.runtime.releaseLease(l.channel, l.activation)
 	})
 	return released
 }
