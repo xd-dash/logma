@@ -84,11 +84,13 @@ func (s *Subscriber) run(ctx context.Context, client *redis.Client, channel stri
 		}
 		s.setLastError(nil)
 		s.markInitiallyReady()
+		delay = reconnectMinDelay
 
 		// go-redis PubSub.Channel owns transparent network reconnect and
-		// re-subscription. This outer loop is re-entered only if the PubSub itself
-		// closes unexpectedly; initial readiness is not reset for the same
-		// Subscriber lifetime because Channel does not expose an unready edge.
+		// re-subscription. This outer loop is re-entered only if the PubSub
+		// channel itself closes unexpectedly. Ready remains the initial-ACK signal
+		// for this Subscriber lifetime; it is not continuous connection health.
+	receive:
 		for {
 			select {
 			case <-ctx.Done():
@@ -97,12 +99,9 @@ func (s *Subscriber) run(ctx context.Context, client *redis.Client, channel stri
 			case message, ok := <-ps.Channel():
 				if !ok {
 					_ = ps.Close()
-					break
+					break receive
 				}
 				onMessage(message.Payload)
-			}
-			if ps.Channel() == nil {
-				break
 			}
 		}
 	}
