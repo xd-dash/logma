@@ -119,6 +119,10 @@ func (c *SubscriptionController) activate(ctx context.Context, id string) (*Subs
 	return c.runtime.AttachSubscriber(ctx, id)
 }
 
+// ShutdownSubscription is idempotent for a declared but already-inactive
+// Subscription. A missing durable declaration remains distinguishable as
+// ErrNotFound so weak Group execution can report it as missing rather than
+// falsely claiming a completed shutdown.
 func (c *SubscriptionController) ShutdownSubscription(ctx context.Context, id string) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -141,13 +145,18 @@ func (c *SubscriptionController) ShutdownSubscription(ctx context.Context, id st
 				continue
 			}
 		}
-		handle, ok := c.active[id]
-		if ok {
+		handle, active := c.active[id]
+		if active {
 			delete(c.active, id)
 		}
 		c.mu.Unlock()
-		if ok {
+
+		if active {
 			handle.Close()
+			return nil
+		}
+		if _, err := c.runtime.store.GetSubscriber(ctx, id); err != nil {
+			return err
 		}
 		return nil
 	}
