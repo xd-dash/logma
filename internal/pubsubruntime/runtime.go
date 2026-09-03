@@ -91,6 +91,13 @@ func (a *channelActivation) removeHandler(id string, token uint64) (bool, int) {
 	return true, len(a.handlers)
 }
 
+func (a *channelActivation) hasHandler(id string, token uint64) bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	entry, ok := a.handlers[id]
+	return ok && entry.token == token
+}
+
 func (a *channelActivation) handlerCount() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -428,6 +435,21 @@ func (r *Runtime) detachSubscriber(channel string, activation *channelActivation
 	return removed
 }
 
+func (r *Runtime) subscriberHandleCurrent(handle *SubscriberHandle) bool {
+	if handle == nil {
+		return false
+	}
+	r.mu.Lock()
+	current, ok := r.active[handle.channel]
+	if !ok || current != handle.activation || r.closed {
+		r.mu.Unlock()
+		return false
+	}
+	active := handle.activation.hasHandler(handle.subscriberID, handle.token)
+	r.mu.Unlock()
+	return active
+}
+
 func (r *Runtime) Active(name string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -483,6 +505,10 @@ func (l *listenerLease) Close() bool {
 		released = l.runtime.releaseLease(l.channel, l.activation)
 	})
 	return released
+}
+
+func (h *SubscriberHandle) current() bool {
+	return h.runtime.subscriberHandleCurrent(h)
 }
 
 func (h *SubscriberHandle) Close() bool {
