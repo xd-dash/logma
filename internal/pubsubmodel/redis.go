@@ -25,7 +25,13 @@ func NewRedisKeys(scope string) (RedisKeys, error) {
 }
 
 func (k RedisKeys) resource(kind, id string) string {
-	return fmt.Sprintf("%s:logma:pubsub:%s:%s", k.scope, kind, id)
+	return fmt.Sprintf("%s:logma:pubsub:%s:%s", k.scope, kind, redisKeyIdentity(id))
+}
+
+func redisKeyIdentity(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.ReplaceAll(value, "%", "%25")
+	return strings.ReplaceAll(value, ":", "%3A")
 }
 
 func (k RedisKeys) registry(kind string) string {
