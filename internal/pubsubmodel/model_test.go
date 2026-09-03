@@ -48,6 +48,66 @@ func TestTypedCallbacks(t *testing.T) {
 	}
 }
 
+func TestWebhookAllowsMultipleCallbackURLs(t *testing.T) {
+	callback := Callback{
+		ID:   "callback-webhook-many",
+		Type: CallbackWebhook,
+		Webhook: &WebhookCallback{
+			CallbackURLs: []string{
+				"https://example.test/one",
+				" https://example.test/two ",
+			},
+	}
+	if err := callback.Validate(); err != nil {
+		t.Fatalf("multi-URL webhook callback should be valid: %v", err)
+	}
+
+	urls := callback.Webhook.URLs()
+	if len(urls) != 2 {
+		t.Fatalf("expected 2 webhook targets, got %d", len(urls))
+	}
+	if urls[0] != "https://example.test/one" || urls[1] != "https://example.test/two" {
+		t.Fatalf("unexpected normalized webhook targets: %#v", urls)
+	}
+}
+
+func TestWebhookCombinesSingleAndMultipleURLForms(t *testing.T) {
+	callback := Callback{
+		ID:   "callback-webhook-compatible",
+		Type: CallbackWebhook,
+		Webhook: &WebhookCallback{
+			CallbackURL: "https://example.test/primary",
+			CallbackURLs: []string{
+				"https://example.test/secondary",
+			},
+		},
+	}
+	if err := callback.Validate(); err != nil {
+		t.Fatalf("combined webhook URL forms should be valid: %v", err)
+	}
+
+	urls := callback.Webhook.URLs()
+	if len(urls) != 2 ||
+		urls[0] != "https://example.test/primary" ||
+		urls[1] != "https://example.test/secondary" {
+		t.Fatalf("unexpected combined webhook targets: %#v", urls)
+	}
+}
+
+func TestWebhookRequiresAtLeastOneNonEmptyURL(t *testing.T) {
+	callback := Callback{
+		ID:   "callback-webhook-empty",
+		Type: CallbackWebhook,
+		Webhook: &WebhookCallback{
+			CallbackURL:  " ",
+			CallbackURLs: []string{"", "  "},
+		},
+	}
+	if err := callback.Validate(); err == nil {
+		t.Fatal("webhook without a non-empty callback URL should be invalid")
+	}
+}
+
 func TestCallbackConfigurationMatchesType(t *testing.T) {
 	callback := Callback{
 		ID:   "callback-bad",
