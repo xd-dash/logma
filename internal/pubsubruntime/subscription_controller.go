@@ -44,8 +44,8 @@ func NewSubscriptionController(runtime *Runtime) (*SubscriptionController, error
 
 // ActivateSubscription is ensure-current rather than merely ensure-present.
 // Repeated activation re-reads the Subscriber and Callback declarations. Every
-// operation acquires a temporary lease on its target Channel listener, so
-// unrelated Subscription operations that converge on the same new Channel
+// operation acquires an internal temporary lease on its target Channel listener,
+// so unrelated Subscription operations that converge on the same new Channel
 // cannot cancel one another's empty-but-in-progress listener. Same-identity
 // operations serialize; different identities remain independent.
 func (c *SubscriptionController) ActivateSubscription(ctx context.Context, id string) error {
@@ -117,15 +117,14 @@ func (c *SubscriptionController) activate(ctx context.Context, id string, preser
 		return nil, err
 	}
 
-	// Always acquire a temporary lease, even when the listener already exists.
-	// This removes the Active()->Activate check-then-act race and makes cleanup
-	// ownership compositional: releasing one failed operation cannot cancel a
-	// listener another operation still holds or an active handler still uses.
-	channelHandle, err := c.runtime.Activate(c.ctx, subscriber.Channel, nil)
+	// Always acquire a temporary internal lease, even when the listener already
+	// exists. This removes the Active()->Activate check-then-act race without
+	// changing the low-level Channel Handle.Close force-deactivate contract.
+	lease, err := c.runtime.acquireListener(c.ctx, subscriber.Channel)
 	if err != nil {
 		return nil, err
 	}
-	defer channelHandle.Close()
+	defer lease.Close()
 
 	if preserveExisting {
 		// A reconciliation already has a known-good handler. If the target is a
