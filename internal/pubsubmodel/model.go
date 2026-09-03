@@ -8,8 +8,9 @@ import (
 	"strings"
 )
 
-// Channel is a Logma-owned active Redis listening resource. A channel may
-// exist without any attached Subscriber resources.
+// Channel is a durable logical Logma namespace. It may exist without any
+// attached Subscriber resources and does not imply that a live Redis listener
+// currently exists for that logical channel.
 type Channel struct {
 	Name string `json:"name"`
 }
@@ -21,7 +22,6 @@ func (c Channel) Validate() error {
 	return nil
 }
 
-// CallbackType identifies the execution mechanism for a Callback resource.
 type CallbackType string
 
 const (
@@ -38,10 +38,6 @@ type Callback struct {
 	Lua     *LuaCallback     `json:"lua,omitempty"`
 }
 
-// WebhookCallback preserves the historical Logma ability for one callback
-// definition to fan out to one or many HTTP endpoints. CallbackURL is the
-// compatibility/single-target form; CallbackURLs is the multi-target form.
-// At least one non-empty HTTP(S) target is required.
 type WebhookCallback struct {
 	CallbackURL  string   `json:"callbackURL,omitempty"`
 	CallbackURLs []string `json:"callbackURLs,omitempty"`
@@ -104,9 +100,9 @@ func (c Callback) Validate() error {
 	return nil
 }
 
-// Subscriber is a durable attachment between an active Channel and one or
-// more Callback resources. Unlike Channel, a Subscriber is invalid without a
-// callback.
+// Subscriber is a durable attachment between one logical Channel and one or
+// more Callback resources. It is invalid without a callback; its durable
+// existence still does not imply that this process currently runs its listener.
 type Subscriber struct {
 	ID          string   `json:"id"`
 	Channel     string   `json:"channel"`
@@ -131,12 +127,10 @@ func (s Subscriber) Validate() error {
 	return nil
 }
 
-// Publisher represents a producer binding. Creating/activating a Publisher is
-// expected to ensure its Channel exists before the producer starts. Config is
-// deliberately opaque here so producer-specific contracts remain owned by the
-// producer integration rather than the generic Pub/Sub model. Opaque still
-// means valid JSON: invalid RawMessage values would otherwise persist data that
-// cannot be serialized through the resource API later.
+// Publisher represents a durable producer binding. Its Channel must exist, but
+// generic Logma does not start an empty consumer listener before a producer.
+// Producer-specific config remains opaque to Logma while still requiring valid
+// JSON so the resource can always be serialized through the control API.
 type Publisher struct {
 	ID      string          `json:"id"`
 	Channel string          `json:"channel"`
@@ -160,9 +154,9 @@ func (p Publisher) Validate() error {
 	return nil
 }
 
-// SubscriptionGroup is durable metadata plus an unordered set of Subscriber
-// identities. Group membership is persisted separately from this hash-shaped
-// metadata so Redis can answer membership questions without decoding JSON.
+// SubscriptionGroup is durable metadata plus an unordered weak set of
+// Subscriber identities. Members may be absent and are resolved when an
+// operator action executes.
 type SubscriptionGroup struct {
 	ID            string   `json:"id"`
 	SubscriberIDs []string `json:"subscriberIDs,omitempty"`
@@ -176,29 +170,6 @@ func (g SubscriptionGroup) Validate() error {
 		if strings.TrimSpace(id) == "" {
 			return errors.New("subscription group subscriber id is empty")
 		}
-	}
-	return nil
-}
-
-// ServerlessEndpoint describes requester-driven delivery capability such as
-// SSE. It is intentionally not a Subscriber: the endpoint can exist without a
-// standing Redis subscription and creates request-scoped event delivery when
-// invoked.
-type ServerlessEndpoint struct {
-	ID   string `json:"id"`
-	Type string `json:"type"`
-	Path string `json:"path"`
-}
-
-func (e ServerlessEndpoint) Validate() error {
-	if strings.TrimSpace(e.ID) == "" {
-		return errors.New("serverless endpoint id is required")
-	}
-	if strings.TrimSpace(e.Type) == "" {
-		return errors.New("serverless endpoint type is required")
-	}
-	if strings.TrimSpace(e.Path) == "" {
-		return errors.New("serverless endpoint path is required")
 	}
 	return nil
 }
