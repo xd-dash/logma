@@ -11,6 +11,8 @@ import (
 
 // DeleteSubscriber removes a Subscriber and reconciles its reverse Channel,
 // Callback, and discovery indexes in the same optimistic Redis transaction.
+// A Subscriber referenced by a SubscriptionGroup cannot be deleted because
+// doing so would invalidate the same graph invariant enforced by group writes.
 func (s *RedisStore) DeleteSubscriber(ctx context.Context, id string) error {
 	id = normalizeIdentity(id)
 	if id == "" {
@@ -19,14 +21,24 @@ func (s *RedisStore) DeleteSubscriber(ctx context.Context, id string) error {
 
 	subscriberKey := s.keys.Subscriber(id)
 	callbacksKey := s.keys.SubscriberCallbacks(id)
+	groupsKey := s.keys.SubscriberGroups(id)
 
 	return s.client.Watch(ctx, func(tx *redis.Tx) error {
+		groups, err := tx.SCard(ctx, groupsKey).Result()
+		if err != nil {
+			return err
+		}
+		if groups != 0 {
+			return fmt.Errorf("%w: subscriber %s belongs to subscription groups", ErrReferenced, id)
+		}
+
 		channel, err := tx.HGet(ctx, subscriberKey, "channel").Result()
 		if err == redis.Nil {
-			// Idempotent deletion should also heal a stale discovery/forward index
-			// when the resource HASH has already disappeared.
+			// Idempotent deletion should also heal stale discovery/forward indexes
+			// when the resource HASH has already disappeared. A non-empty groups
+			// reverse index is still authoritative and was rejected above.
 			_, cleanupErr := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-				pipe.Del(ctx, callbacksKey)
+				pipe.Del(ctx, callbacksKey, groupsKey)
 				pipe.SRem(ctx, s.keys.Subscribers(), id)
 				return nil
 			})
@@ -42,7 +54,7 @@ func (s *RedisStore) DeleteSubscriber(ctx context.Context, id string) error {
 		}
 
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-			pipe.Del(ctx, subscriberKey, callbacksKey)
+			pipe.Del(ctx, subscriberKey, callbacksKey, groupsKey)
 			pipe.SRem(ctx, s.keys.Subscribers(), id)
 			if channel != "" {
 				pipe.SRem(ctx, s.keys.ChannelSubscribers(channel), id)
@@ -53,7 +65,7 @@ func (s *RedisStore) DeleteSubscriber(ctx context.Context, id string) error {
 			return nil
 		})
 		return err
-	}, subscriberKey, callbacksKey)
+	}, subscriberKey, callbacksKey, groupsKey)
 }
 
 // DeletePublisher removes a Publisher and its reverse Channel index.
@@ -149,18 +161,29 @@ func (s *RedisStore) DeleteChannel(ctx context.Context, name string) error {
 	}, resourceKey, subscribersKey, publishersKey)
 }
 
-// DeleteSubscriptionGroup removes group metadata and membership. Group
-// membership has no reverse index, so no other graph resources are mutated.
+// DeleteSubscriptionGroup removes group metadata and membership and reconciles
+// every Subscriber reverse membership edge in the same optimistic transaction.
 func (s *RedisStore) DeleteSubscriptionGroup(ctx context.Context, id string) error {
 	id = normalizeIdentity(id)
 	if id == "" {
 		return errors.New("subscription group id is required")
 	}
-	return s.client.Del(
-		ctx,
-		s.keys.SubscriptionGroup(id),
-		s.keys.SubscriptionGroupSubscribers(id),
-	).Err()
+	groupKey := s.keys.SubscriptionGroup(id)
+	membersKey := s.keys.SubscriptionGroupSubscribers(id)
+	return s.client.Watch(ctx, func(tx *redis.Tx) error {
+		members, err := tx.SMembers(ctx, membersKey).Result()
+		if err != nil {
+			return err
+		}
+		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.Del(ctx, groupKey, membersKey)
+			for _, subscriberID := range members {
+				pipe.SRem(ctx, s.keys.SubscriberGroups(subscriberID), id)
+			}
+			return nil
+		})
+		return err
+	}, groupKey, membersKey)
 }
 
 func normalizeIdentity(value string) string {
