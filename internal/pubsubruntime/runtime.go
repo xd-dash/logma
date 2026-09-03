@@ -132,7 +132,7 @@ func (r *Runtime) Active(name string) bool {
 	return ok
 }
 
-func (h *Handle) Ready() <-chan struct{} { return h.sub.Ready() }
+func (h *Handle) Ready() <-chan struct{}   { return h.sub.Ready() }
 func (h *Handle) Stopped() <-chan struct{} { return h.sub.Stopped() }
-func (h *Handle) LastError() error       { return h.sub.LastError() }
-func (h *Handle) Close() bool            { return h.runtime.Deactivate(h.channel) }
+func (h *Handle) LastError() error         { return h.sub.LastError() }
+func (h *Handle) Close() bool              { return h.runtime.Deactivate(h.channel) }
