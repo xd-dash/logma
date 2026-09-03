@@ -19,44 +19,38 @@ Subscriber
   references one or more Callbacks
 
 Publisher
-  producer binding to one Channel
+  durable producer binding to one Channel
+  producer type selects a runtime adapter
   producer-specific config remains opaque to Logma
 
 SubscriptionGroup
   durable grouping of zero or more Subscribers
+
+PublisherGroup
+  durable grouping of zero or more Publishers
+  does not imply a shared Channel, provider type, or transport credential
 
 ServerlessEndpoint
   requester-driven surface such as SSE
   not a standing Subscriber
 ```
 
-The important distinction is:
+The important distinctions are:
 
 ```text
 Logma Channel resource != Redis Pub/Sub transport topic
 Subscriber               != Channel
+Publisher graph record   != active producer process/runtime
 ServerlessEndpoint        != standing Subscriber
 ```
 
 ## Canonical identity and Redis addresses
 
-`FATLINE_SCOPE` is an explicit, non-empty, pattern-safe security boundary. New v2 code parses it with `keyspace.ParseScope`; it does not synthesize an `unknown` scope.
+`FATLINE_SCOPE` is explicit, non-empty, and pattern-safe. New v2 code parses it fail-closed rather than synthesizing a scope such as `unknown`.
 
-Domain identities are canonicalized once by trimming outer whitespace, then encoded injectively when interpolated into Redis key segments. Structural grammar remains package-owned and unescaped. For example:
+Domain identities are canonicalized once by trimming outer whitespace, then encoded injectively when interpolated into Redis key segments. Structural grammar remains package-owned. Raw logical identities remain raw values in HASH fields and SET membership.
 
-```text
-logical identity: market:oil
-encoded segment:  market%3Aoil
-
-logical identity: request 123
-encoded segment:  request%20123
-```
-
-The encoding prevents opaque identities from colliding with structural children. For example, Channel identity `foo:subscribers` cannot alias the `:subscribers` relationship set for Channel `foo`.
-
-Raw logical identities remain raw values inside HASH fields and SET membership.
-
-The current v2 graph is:
+The current graph is:
 
 ```text
 <scope>:logma:pubsub:channel:<id>
@@ -72,45 +66,58 @@ The current v2 graph is:
 <scope>:logma:pubsub:subscriber:<id>:subscription-groups
 
 <scope>:logma:pubsub:publisher:<id>
+<scope>:logma:pubsub:publisher:<id>:publisher-groups
 
 <scope>:logma:pubsub:subscription-group:<id>
 <scope>:logma:pubsub:subscription-group:<id>:subscribers
 
+<scope>:logma:pubsub:publisher-group:<id>
+<scope>:logma:pubsub:publisher-group:<id>:publishers
+
 <scope>:logma:pubsub:registry:channels
 <scope>:logma:pubsub:registry:callbacks
 <scope>:logma:pubsub:registry:subscribers
+<scope>:logma:pubsub:registry:publishers
+<scope>:logma:pubsub:registry:subscription-groups
+<scope>:logma:pubsub:registry:publisher-groups
 ```
 
 `ResourceKeysV2` is the production mapper for `RedisStore` on this branch. There is no legacy-key fallback or dual read/write path.
 
 ## Redis-native graph semantics
 
-The resource representation is HASH + SET rather than JSON-per-resource. Discovery uses explicit registries; production graph traversal does not use `SCAN`.
+The representation is HASH + SET rather than JSON-per-resource. Collection discovery uses explicit registries; production graph traversal does not use `SCAN`.
 
-Forward and reverse relationships are maintained together:
+Strong relationships are maintained forward and reverse:
 
 ```text
-Channel -> Subscribers
-Channel -> Publishers
-Callback -> Subscribers
-Subscriber -> Callbacks
-Subscriber -> SubscriptionGroups
-SubscriptionGroup -> Subscribers
+Channel <- Subscriber
+Channel <- Publisher
+Callback <- Subscriber
+Subscriber <- SubscriptionGroup
+Publisher <- PublisherGroup
 ```
 
-Relationship-bearing writes require referenced resources to exist. Deletion of a referenced Channel, Callback, or Subscriber fails with `ErrReferenced` rather than producing a dangling graph.
+Relationship-bearing writes require referenced resources to exist. Deletion of a referenced Channel, Callback, Subscriber, or Publisher returns `ErrReferenced` rather than producing a dangling graph. Updating or deleting either group type reconciles its members' reverse membership sets transactionally.
 
-SubscriptionGroup membership is bidirectional. A Subscriber cannot be deleted while a group references it; updating or deleting a group reconciles each Subscriber's reverse `subscription-groups` set.
+Publisher `config` is uninterpreted by the generic model, but non-empty config must be valid JSON because its representation is `json.RawMessage`.
 
-Publisher `config` remains uninterpreted by the generic model, but when present it must still be valid JSON because its representation is `json.RawMessage`.
+## Publisher reconciliation
 
-## Optimistic transaction behavior
+Persistence and runtime activation are deliberately separate operations:
 
-Graph mutations that reconcile references use Redis `WATCH` plus transactional pipelines. A normal concurrent modification can therefore produce `redis.TxFailedErr` without representing an application error.
+```text
+Publisher resource
+      -> PublisherReconciler
+      -> load referenced Channel
+      -> ensure Channel runtime is active
+      -> resolve Publisher.Type in PublisherRegistry
+      -> PublisherProvider.EnsureActive(...)
+```
 
-The store owns this provider concern: watched mutations use a bounded, context-aware retry policy. Only `redis.TxFailedErr` is retried; validation, graph-policy, Redis/network, and context errors return immediately. Exhausted contention returns an explicit error instead of retrying indefinitely.
+`PublisherProvider` is the adapter boundary for producer implementations such as `stonks`, `news`, Unix/socket producers, SSE-oriented producers, or other Fatline-native integrations. Logma does not hardcode those producer types. Provider registration rejects duplicate type ownership, and `EnsureActive` is expected to be idempotent for a stable Publisher identity/configuration.
 
-Qualification includes a forced conflict from an independent Redis connection and proves that the first EXEC loses the WATCH race while a later bounded retry commits successfully.
+Channel activation is an injected dependency because the graph-store credential intentionally does not imply Redis `SUBSCRIBE` authority. A composition must supply a transport-authorized Channel runtime separately. The default resource router therefore persists Publishers but does not manufacture runtime authority; its reconcile endpoint returns `503` when no reconciler has been explicitly configured.
 
 ## Semantic capability and ACL provider
 
@@ -122,71 +129,58 @@ LogmaPubSubGraph(Read | Write)
         -> key patterns + command grants
 ```
 
-The graph capability is scoped to:
+The graph capability is scoped to `~<scope>:logma:pubsub:*` and does not imply Redis Pub/Sub transport, scripting, Function administration, or neighboring Logma runtime authority. Semantic `Write` includes provider-internal read primitives required for safe guarded mutations without granting unrelated independent read surfaces.
 
-```text
-~<scope>:logma:pubsub:*
-```
+Real Redis ACL qualification proves combined read/write and write-only graph principals and verifies `NOPERM` for neighboring `logma:runtime`, a foreign `FATLINE_SCOPE`, `PUBLISH`, and `SUBSCRIBE`.
 
-and does not imply Redis Pub/Sub transport, scripting, Function administration, or neighboring Logma runtime authority.
-
-`Write` means semantic permission to perform graph mutations. The Redis provider may therefore include internal read primitives required to perform a correct guarded mutation (`HGET`, `SMEMBERS`, `SCARD`, `EXISTS`, etc.) without granting unrelated higher-level read APIs such as `HGETALL` unless `Read` is also requested.
-
-The real Redis ACL gate proves both combined read/write and write-only principals. It also proves `NOPERM` for:
-
-```text
-neighboring <scope>:logma:runtime:* keys
-foreign FATLINE_SCOPE keys
-PUBLISH transport operations
-SUBSCRIBE transport operations
-```
-
-## Callbacks and runtime attachment
-
-Webhook callbacks contain one or more normalized HTTP(S) targets. Redis stores target membership as an unordered SET, so durable reconstruction is deterministic by sorting; declaration order is not a delivery contract.
-
-Lua callbacks are valid domain resources but are not yet executable by the current Subscriber runtime. Runtime attachment currently supports webhook Callbacks only.
+## Runtime attachment semantics
 
 One active Redis subscription is owned per active Logma Channel. Subscriber handlers multiplex onto that listener. Runtime handles are generation-specific so stale handles cannot deactivate or detach a replacement generation with the same identity. Channel deactivation cancels the activation context used by in-flight webhook requests.
 
-Attached Subscribers snapshot Callback configuration at attach time; durable updates are not silently hot-reloaded.
+Attached Subscribers snapshot Callback configuration at attach time. Webhook fanout remains synchronous; moving delivery onto a bounded dispatcher is a separate runtime behavior change.
 
-Webhook fanout is currently synchronous. A slow target can delay later targets/messages. Introducing a bounded delivery dispatcher remains a separate runtime behavior change and should receive its own qualification rather than being folded into storage semantics.
+Publisher reconciliation uses that Channel runtime only through the narrow Channel-activation interface; producer startup remains owned by the registered PublisherProvider.
 
-## HTTP adapter boundary
+## HTTP resource surface
 
-The additive HTTP resource API currently exposes Channel, Callback, and Subscriber operations. JSON bodies are bounded to 1 MiB, reject unknown fields, and accept exactly one JSON value. Missing references and referenced-resource deletion map to HTTP `409`; missing resources map to `404`; storage/configuration failures remain server errors.
-
-Domain identities are not defined by HTTP path syntax. Redis v2 can safely encode characters such as `/`, but the current Chi `{id}` routes have not qualified slash-bearing identities. If that becomes required, change the HTTP adapter (for example by an explicit encoded-ID contract) rather than weakening the domain identity grammar.
-
-## Legacy compatibility boundary
-
-The historical API/runtime still uses flattened keys such as:
+The additive resource API now exposes consistent collection/create/read/delete operations for:
 
 ```text
-active_subscriptions:<subscription-id>:<channel> = <callbackURL>
+GET/POST /pubsub/channels
+GET/POST /pubsub/callbacks
+GET/POST /pubsub/subscribers
+GET/POST /pubsub/publishers
+GET/POST /pubsub/subscription-groups
+GET/POST /pubsub/publisher-groups
 ```
 
-That remains a separate compatibility surface. The v2 branch does not reinterpret or silently migrate those keys.
-
-Likewise, older `serverless/keyspace` helpers (`FromEnv`, `Scope.Name`, `Worker`, `Profile`, and current `NewsProfile`) remain compatibility primitives for already-qualified deployments. They are intentionally not the template for new resource authority because their older normalization can be lossy. New v2 work uses:
+Each family also has `GET` and `DELETE` by identity. Publisher additionally exposes:
 
 ```text
-ParseScope
-Family / Resource
-semantic Grant
-CompileRedisRequirements
+POST /pubsub/publishers/{id}/reconcile
 ```
 
-## Repair boundaries
+The default router returns `503` for reconciliation until a composition injects a PublisherReconciler. A successful configured reconcile returns `204`.
 
-Indexes are first-class durable graph state. The store does not use hidden `SCAN` repair logic.
+JSON bodies are bounded to 1 MiB, reject unknown fields, and accept exactly one JSON value. Missing references and referenced-resource deletion map to `409`; missing resources map to `404`; storage/configuration failures remain server errors.
 
-If a resource HASH is externally deleted, an idempotent delete can clean indexes for which enough relationship identity remains locally. It cannot reconstruct unknown historical relationships that were never indexed. If stronger repair semantics become required, add the necessary durable reverse/index resource and qualify it explicitly rather than scanning the keyspace or guessing.
+Domain identity is not defined by HTTP path syntax. Redis v2 can encode characters such as `/`, while ordinary Chi path parameters have not yet qualified arbitrary slash-bearing identities. Fix that at the HTTP adapter layer if needed rather than narrowing the domain identity grammar.
+
+## Optimistic transaction behavior
+
+Graph mutations that reconcile references use Redis `WATCH` plus transactional pipelines. The store owns bounded, context-aware retry of `redis.TxFailedErr` only. Validation, graph-policy, Redis/network, ACL, and context errors return immediately; persistent contention surfaces after the retry bound.
+
+Qualification forces a real WATCH conflict from an independent Redis connection and proves a later bounded retry commits.
+
+## Legacy and repair boundaries
+
+Historical flattened `active_subscriptions:*` state remains a separate compatibility surface. The v2 branch does not reinterpret or silently migrate it. Older lossy `serverless/keyspace` helpers likewise remain compatibility primitives rather than templates for new v2 authority.
+
+Indexes are first-class durable graph state. The store does not use hidden `SCAN` repair logic. If stronger repair becomes necessary, add the required explicit durable index and qualify it rather than scanning or guessing historical relationships.
 
 ## Current qualification boundary
 
-The current hardened v2 graph is qualified against exact Redis 7.2.5 after a source-only gate of:
+The current v2 graph is qualified against Redis 7.2.5 after a source-only gate of:
 
 ```text
 go mod tidy + clean go.mod/go.sum
@@ -196,6 +190,8 @@ go test ./...
 go build ./cmd/api
 ```
 
-The Redis stage then qualifies canonical addresses, graph/registry behavior, bidirectional group integrity, bounded WATCH retry, generated ACL behavior, write-only mutation authority, negative NOPERM boundaries, and scoped residue cleanup.
+The Redis stage qualifies canonical addresses, all resource registries, Subscriber/SubscriptionGroup and Publisher/PublisherGroup strong-reference integrity, bounded WATCH retry, generated ACL behavior, write-only mutation authority, negative NOPERM boundaries, and scoped residue cleanup.
+
+Publisher runtime tests separately prove Channel activation occurs before producer-provider activation, active Channels are reused, duplicate provider type registration is rejected, and HTTP reconciliation requires explicit composition.
 
 This remains local provider/resource evidence. Retained Farcaster provider behavior requires a separate side-by-side qualification before any canonical retained provider cutover.
