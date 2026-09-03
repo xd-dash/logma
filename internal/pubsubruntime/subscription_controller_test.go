@@ -171,8 +171,22 @@ func TestSubscriptionControllerInstallsHandlerBeforeReadyAcknowledgement(t *test
 	}()
 	dispatch := <-dispatchReady
 
-	// Simulate a message arriving immediately as Redis acknowledges SUBSCRIBE.
-	// The handler must already be installed before readiness can unblock the API.
+	deadline := time.Now().Add(time.Second)
+	for {
+		runtime.mu.Lock()
+		activation := runtime.active["events"]
+		runtime.mu.Unlock()
+		if activation != nil && activation.handlerCount() == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Subscription handler was not installed while activation waited for readiness")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// Simulate a message becoming deliverable at the same boundary as the Redis
+	// SUBSCRIBE acknowledgement. The handler is already present before success.
 	dispatch("first-after-ack")
 	close(ready)
 	if err := <-result; err != nil {
