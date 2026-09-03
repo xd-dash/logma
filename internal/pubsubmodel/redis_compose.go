@@ -3,7 +3,6 @@ package pubsubmodel
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -42,7 +41,15 @@ func (s *RedisStore) CreateWebhookSubscription(ctx context.Context, channel Chan
 	callbackURLsKey := s.keys.CallbackURLs(callbackID)
 	subscriberKey := s.keys.Subscriber(subscriberID)
 	subscriberCallbacksKey := s.keys.SubscriberCallbacks(subscriberID)
-	watchKeys := []string{channelKey, callbackKey, callbackURLsKey, subscriberKey, subscriberCallbacksKey}
+	watchKeys := []string{
+		channelKey,
+		s.keys.ChannelSubscribers(channelName),
+		callbackKey,
+		callbackURLsKey,
+		s.keys.CallbackSubscribers(callbackID),
+		subscriberKey,
+		subscriberCallbacksKey,
+	}
 
 	return s.watch(ctx, func(tx *redis.Tx) error {
 		callbackExists, err := tx.Exists(ctx, callbackKey).Result()
@@ -60,29 +67,32 @@ func (s *RedisStore) CreateWebhookSubscription(ctx context.Context, channel Chan
 			return fmt.Errorf("%w: subscriber %s", ErrAlreadyExists, subscriberID)
 		}
 
-		storedChannelName, err := tx.HGet(ctx, channelKey, "name").Result()
-		channelExists := err == nil
-		if err != nil && err != redis.Nil {
+		channelExists, err := tx.Exists(ctx, channelKey).Result()
+		if err != nil {
 			return err
 		}
-		if channelExists && normalizeIdentity(storedChannelName) != channelName {
-			return fmt.Errorf("channel %s has mismatched stored identity %q", channelName, storedChannelName)
+		if channelExists != 0 {
+			storedChannelName, err := tx.HGet(ctx, channelKey, "name").Result()
+			if err != nil {
+				return fmt.Errorf("decode existing channel %s: %w", channelName, err)
+			}
+			if normalizeIdentity(storedChannelName) != channelName {
+				return fmt.Errorf("channel %s has mismatched stored identity %q", channelName, storedChannelName)
+			}
 		}
 
 		urls := uniqueTrimmed(callback.Webhook.URLs())
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-			if !channelExists {
+			if channelExists == 0 {
 				pipe.HSet(ctx, channelKey, map[string]any{"name": channelName})
 				pipe.SAdd(ctx, s.keys.Channels(), channelName)
 			}
 
-			pipe.Del(ctx, callbackURLsKey)
 			pipe.HSet(ctx, callbackKey, map[string]any{"id": callbackID, "type": string(CallbackWebhook)})
 			pipe.SAdd(ctx, callbackURLsKey, stringsToAny(urls)...)
 			pipe.SAdd(ctx, s.keys.Callbacks(), callbackID)
 
 			pipe.HSet(ctx, subscriberKey, map[string]any{"id": subscriberID, "channel": channelName})
-			pipe.Del(ctx, subscriberCallbacksKey)
 			pipe.SAdd(ctx, subscriberCallbacksKey, callbackID)
 			pipe.SAdd(ctx, s.keys.Subscribers(), subscriberID)
 			pipe.SAdd(ctx, s.keys.ChannelSubscribers(channelName), subscriberID)
@@ -92,9 +102,3 @@ func (s *RedisStore) CreateWebhookSubscription(ctx context.Context, channel Chan
 		return err
 	}, watchKeys...)
 }
-
-// normalizeIdentity remains the one canonical outer-whitespace normalization
-// boundary for logical identities. Keep simple composition aligned with every
-// other RedisStore operation rather than introducing façade-specific identity
-// rules.
-var _ = strings.TrimSpace
