@@ -141,6 +141,26 @@ func (p Publisher) Validate() error {
 	return nil
 }
 
+// SubscriptionGroup is durable metadata plus an unordered set of Subscriber
+// identities. Group membership is persisted separately from this hash-shaped
+// metadata so Redis can answer membership questions without decoding JSON.
+type SubscriptionGroup struct {
+	ID            string   `json:"id"`
+	SubscriberIDs []string `json:"subscriberIDs,omitempty"`
+}
+
+func (g SubscriptionGroup) Validate() error {
+	if strings.TrimSpace(g.ID) == "" {
+		return errors.New("subscription group id is required")
+	}
+	for _, id := range g.SubscriberIDs {
+		if strings.TrimSpace(id) == "" {
+			return errors.New("subscription group subscriber id is empty")
+		}
+	}
+	return nil
+}
+
 // ServerlessEndpoint describes requester-driven delivery capability such as
 // SSE. It is intentionally not a Subscriber: the endpoint can exist without a
 // standing Redis subscription and creates request-scoped event delivery when
