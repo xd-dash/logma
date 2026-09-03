@@ -43,12 +43,11 @@ func NewSubscriptionController(runtime *Runtime) (*SubscriptionController, error
 }
 
 // ActivateSubscription is ensure-current rather than merely ensure-present.
-// Repeated activation re-reads the Subscriber and Callback declarations. When a
-// replacement needs a new listener, the previous known-good handler remains
-// installed until that listener has completed its initial SUBSCRIBE ACK. First
-// activation installs its handler before waiting for the initial ACK so there is
-// no ACK-before-handler window. Same-identity operations serialize, while
-// different identities remain independent.
+// Repeated activation re-reads the Subscriber and Callback declarations. Every
+// operation acquires a temporary lease on its target Channel listener, so
+// unrelated Subscription operations that converge on the same new Channel
+// cannot cancel one another's empty-but-in-progress listener. Same-identity
+// operations serialize; different identities remain independent.
 func (c *SubscriptionController) ActivateSubscription(ctx context.Context, id string) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -118,19 +117,15 @@ func (c *SubscriptionController) activate(ctx context.Context, id string, preser
 		return nil, err
 	}
 
-	var channelHandle *Handle
-	if !c.runtime.Active(subscriber.Channel) {
-		channelHandle, err = c.runtime.Activate(c.ctx, subscriber.Channel, nil)
-		if err != nil {
-			return nil, err
-		}
+	// Always acquire a temporary lease, even when the listener already exists.
+	// This removes the Active()->Activate check-then-act race and makes cleanup
+	// ownership compositional: releasing one failed operation cannot cancel a
+	// listener another operation still holds or an active handler still uses.
+	channelHandle, err := c.runtime.Activate(c.ctx, subscriber.Channel, nil)
+	if err != nil {
+		return nil, err
 	}
-
-	cleanupOperationListener := func() {
-		if channelHandle != nil {
-			c.runtime.deactivateIfIdle(subscriber.Channel, channelHandle.activation)
-		}
-	}
+	defer channelHandle.Close()
 
 	if preserveExisting {
 		// A reconciliation already has a known-good handler. If the target is a
@@ -139,15 +134,10 @@ func (c *SubscriptionController) activate(ctx context.Context, id string, preser
 		// established listener Ready is intentionally only historical initial
 		// readiness; go-redis owns transparent reconnect/resubscribe afterward.
 		if err := c.runtime.WaitReady(ctx, subscriber.Channel); err != nil {
-			cleanupOperationListener()
 			return nil, err
 		}
 		newHandle, err := c.runtime.AttachSubscriber(ctx, id)
 		if err != nil {
-			// The target listener may have become ready before Callback material
-			// changed or disappeared. If this operation created that listener and
-			// no handler was attached, do not leak an empty listener.
-			cleanupOperationListener()
 			return nil, err
 		}
 		return newHandle, nil
@@ -158,7 +148,6 @@ func (c *SubscriptionController) activate(ctx context.Context, id string, preser
 	// soon as SUBSCRIBE is acknowledged.
 	newHandle, err := c.runtime.AttachSubscriber(ctx, id)
 	if err != nil {
-		cleanupOperationListener()
 		return nil, err
 	}
 	if err := c.runtime.WaitReady(ctx, subscriber.Channel); err != nil {
