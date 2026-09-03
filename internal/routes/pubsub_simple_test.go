@@ -139,7 +139,10 @@ func TestSimpleGroupRuntimeOperationsResolveAtExecutionTime(t *testing.T) {
 	fakeSubscriptionGroups[store] = map[string]pubsubmodel.SubscriptionGroup{
 		"morning": {ID: "morning", SubscriberIDs: []string{"screen", "not-running-yet", "broken"}},
 	}
-	controller := &fakeSimpleSubscriptionController{fail: map[string]error{"broken": errors.New("activation failed")}}
+	controller := &fakeSimpleSubscriptionController{fail: map[string]error{
+		"not-running-yet": pubsubmodel.ErrNotFound,
+		"broken":          errors.New("activation failed"),
+	}}
 	store.subscribers["broken"] = pubsubmodel.Subscriber{ID: "broken", Channel: "market", CallbackIDs: []string{"hook"}}
 	router := simpleTestRouterWithController(t, store, controller)
 
