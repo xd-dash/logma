@@ -140,8 +140,24 @@ func TestPubSubResourceAPIRejectsInvalidAndMissingReferences(t *testing.T) {
 	}
 }
 
+func TestPubSubResourceAPIRequiresDedicatedRedisConfiguration(t *testing.T) {
+	t.Setenv("API_KEY", "test-api-key")
+	t.Setenv("PUBSUB_RESOURCE_REDIS_URI", "")
+	t.Setenv("FATLINE_SCOPE", "qualification:pubsub-api")
+	router := NewPubSubResourceRouter()
+
+	resp := requestResource(t, router, http.MethodPost, "/pubsub/channels", `{"name":"events"}`)
+	if resp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("missing resource Redis status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), "PUBSUB_RESOURCE_REDIS_URI is required") {
+		t.Fatalf("missing resource Redis body = %q", resp.Body.String())
+	}
+}
+
 func TestPubSubResourceAPIRequiresExplicitFatlineScope(t *testing.T) {
 	t.Setenv("API_KEY", "test-api-key")
+	t.Setenv("PUBSUB_RESOURCE_REDIS_URI", "127.0.0.1:1")
 	t.Setenv("FATLINE_SCOPE", "")
 	router := NewPubSubResourceRouter()
 
