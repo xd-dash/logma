@@ -57,7 +57,7 @@ func (s *fakeSubscriber) Ready() <-chan struct{}   { return s.ready }
 func (s *fakeSubscriber) Stopped() <-chan struct{} { return s.stopped }
 func (s *fakeSubscriber) LastError() error         { return s.err }
 
-func TestRuntimeActivatesPersistedChannelWithSharedHandleLeases(t *testing.T) {
+func TestRuntimeActivatesPersistedChannelWithoutCallback(t *testing.T) {
 	store := fakeStore{channels: map[string]pubsubmodel.Channel{
 		"events": {Name: "events"},
 	}}
@@ -98,25 +98,22 @@ func TestRuntimeActivatesPersistedChannelWithSharedHandleLeases(t *testing.T) {
 		t.Fatalf("second Activate: %v", err)
 	}
 	if calls != 1 {
-		t.Fatalf("shared Activate subscribed %d times, want 1", calls)
+		t.Fatalf("idempotent Activate subscribed %d times, want 1", calls)
 	}
 	if second.sub != handle.sub {
-		t.Fatal("shared Activate returned a different subscriber")
+		t.Fatal("idempotent Activate returned a different subscriber")
 	}
 	if !handle.Close() {
-		t.Fatal("first Close did not release its listener lease")
-	}
-	if !runtime.Active("events") {
-		t.Fatal("first Handle.Close canceled a listener still leased by another handle")
-	}
-	if handle.Close() {
-		t.Fatal("second Close on same handle unexpectedly released another lease")
-	}
-	if !second.Close() {
-		t.Fatal("second Handle.Close did not release final listener lease")
+		t.Fatal("Close did not deactivate channel")
 	}
 	if runtime.Active("events") {
-		t.Fatal("channel remains active after final lease release")
+		t.Fatal("channel remains active after Close")
+	}
+	if second.Close() {
+		t.Fatal("stale shared Handle unexpectedly deactivated another generation")
+	}
+	if handle.Close() {
+		t.Fatal("second Close unexpectedly reported deactivation")
 	}
 	close(sub.stopped)
 }
@@ -150,16 +147,12 @@ func TestRuntimeAttachesWebhookSubscriberToActiveChannel(t *testing.T) {
 	})
 	t.Cleanup(runtime.Close)
 
-	listener, err := runtime.Activate(context.Background(), "events", nil)
-	if err != nil {
+	if _, err := runtime.Activate(context.Background(), "events", nil); err != nil {
 		t.Fatalf("Activate: %v", err)
 	}
 	handle, err := runtime.AttachSubscriber(context.Background(), "sub-a")
 	if err != nil {
 		t.Fatalf("AttachSubscriber: %v", err)
-	}
-	if !listener.Close() {
-		t.Fatal("failed to release setup listener lease")
 	}
 	dispatch(`{"probe":"first"}`)
 	got := []string{<-delivered, <-delivered}
@@ -173,9 +166,6 @@ func TestRuntimeAttachesWebhookSubscriberToActiveChannel(t *testing.T) {
 
 	if !handle.Close() {
 		t.Fatal("Subscriber Close did not detach delivery")
-	}
-	if runtime.Active("events") {
-		t.Fatal("last handler detach left listener active without a lease")
 	}
 	dispatch(`{"probe":"second"}`)
 	select {
