@@ -29,12 +29,13 @@ func newFakePubSubResourceStore() *fakePubSubResourceStore {
 }
 
 func (s *fakePubSubResourceStore) PutChannel(_ context.Context, resource pubsubmodel.Channel) error {
+	resource.Name = strings.TrimSpace(resource.Name)
 	s.channels[resource.Name] = resource
 	return nil
 }
 
 func (s *fakePubSubResourceStore) GetChannel(_ context.Context, name string) (pubsubmodel.Channel, error) {
-	resource, ok := s.channels[name]
+	resource, ok := s.channels[strings.TrimSpace(name)]
 	if !ok {
 		return pubsubmodel.Channel{}, pubsubmodel.ErrNotFound
 	}
@@ -50,12 +51,13 @@ func (s *fakePubSubResourceStore) DeleteChannel(_ context.Context, name string) 
 }
 
 func (s *fakePubSubResourceStore) PutCallback(_ context.Context, resource pubsubmodel.Callback) error {
+	resource.ID = strings.TrimSpace(resource.ID)
 	s.callbacks[resource.ID] = resource
 	return nil
 }
 
 func (s *fakePubSubResourceStore) GetCallback(_ context.Context, id string) (pubsubmodel.Callback, error) {
-	resource, ok := s.callbacks[id]
+	resource, ok := s.callbacks[strings.TrimSpace(id)]
 	if !ok {
 		return pubsubmodel.Callback{}, pubsubmodel.ErrNotFound
 	}
@@ -74,12 +76,13 @@ func (s *fakePubSubResourceStore) PutSubscriber(_ context.Context, resource pubs
 	if s.putSubErr != nil {
 		return s.putSubErr
 	}
+	resource.ID = strings.TrimSpace(resource.ID)
 	s.subscribers[resource.ID] = resource
 	return nil
 }
 
 func (s *fakePubSubResourceStore) GetSubscriber(_ context.Context, id string) (pubsubmodel.Subscriber, error) {
-	resource, ok := s.subscribers[id]
+	resource, ok := s.subscribers[strings.TrimSpace(id)]
 	if !ok {
 		return pubsubmodel.Subscriber{}, pubsubmodel.ErrNotFound
 	}
@@ -114,8 +117,8 @@ func TestPubSubResourceAPIChannelCallbackSubscriberRoundTrip(t *testing.T) {
 	store := newFakePubSubResourceStore()
 	router := resourceTestRouter(t, store)
 
-	resp := requestResource(t, router, http.MethodPost, "/pubsub/channels", `{"name":"events"}`)
-	if resp.Code != http.StatusCreated {
+	resp := requestResource(t, router, http.MethodPost, "/pubsub/channels", `{"name":" events "}`)
+	if resp.Code != http.StatusCreated || !strings.Contains(resp.Body.String(), `"name":"events"`) {
 		t.Fatalf("POST Channel status = %d, body = %s", resp.Code, resp.Body.String())
 	}
 	resp = requestResource(t, router, http.MethodGet, "/pubsub/channels/events", "")
@@ -147,8 +150,8 @@ func TestPubSubResourceAPIGuardedDeleteOrder(t *testing.T) {
 	store.channels["events"] = pubsubmodel.Channel{Name: "events"}
 	store.callbacks["hook"] = pubsubmodel.Callback{ID: "hook", Type: pubsubmodel.CallbackWebhook, Webhook: &pubsubmodel.WebhookCallback{CallbackURL: "https://example.invalid/hook"}}
 	store.subscribers["sub-a"] = pubsubmodel.Subscriber{ID: "sub-a", Channel: "events", CallbackIDs: []string{"hook"}}
-	store.deleteChannelErr = errors.New("channel is still referenced by subscribers or publishers")
-	store.deleteCallbackErr = errors.New("callback is still referenced by subscribers")
+	store.deleteChannelErr = pubsubmodel.ErrReferenced
+	store.deleteCallbackErr = pubsubmodel.ErrReferenced
 	router := resourceTestRouter(t, store)
 
 	resp := requestResource(t, router, http.MethodDelete, "/pubsub/callbacks/hook", "")
@@ -190,7 +193,7 @@ func TestPubSubResourceAPIRejectsInvalidAndMissingReferences(t *testing.T) {
 		t.Fatalf("invalid Callback status = %d, body = %s", resp.Code, resp.Body.String())
 	}
 
-	store.putSubErr = errors.New("subscriber references missing channel or callback")
+	store.putSubErr = pubsubmodel.ErrMissingReference
 	resp = requestResource(t, router, http.MethodPost, "/pubsub/subscribers", `{"id":"sub-a","channel":"missing","callbackIDs":["missing"]}`)
 	if resp.Code != http.StatusConflict {
 		t.Fatalf("missing references status = %d, body = %s", resp.Code, resp.Body.String())
@@ -202,12 +205,35 @@ func TestPubSubResourceAPIRejectsInvalidAndMissingReferences(t *testing.T) {
 	}
 }
 
+func TestPubSubResourceAPIDoesNotMaskInfrastructureErrorsAsConflicts(t *testing.T) {
+	store := newFakePubSubResourceStore()
+	store.putSubErr = errors.New("redis unavailable")
+	store.deleteCallbackErr = errors.New("redis unavailable")
+	router := resourceTestRouter(t, store)
+
+	resp := requestResource(t, router, http.MethodPost, "/pubsub/subscribers", `{"id":"sub-a","channel":"events","callbackIDs":["hook"]}`)
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("Subscriber infrastructure status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	resp = requestResource(t, router, http.MethodDelete, "/pubsub/callbacks/hook", "")
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("Callback infrastructure status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestPubSubResourceAPIRejectsTrailingJSON(t *testing.T) {
+	router := resourceTestRouter(t, newFakePubSubResourceStore())
+	resp := requestResource(t, router, http.MethodPost, "/pubsub/channels", `{"name":"events"} {"name":"second"}`)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("trailing JSON status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+}
+
 func TestPubSubResourceAPIRequiresDedicatedRedisConfiguration(t *testing.T) {
 	t.Setenv("API_KEY", "test-api-key")
 	t.Setenv("PUBSUB_RESOURCE_REDIS_URI", "")
 	t.Setenv("FATLINE_SCOPE", "qualification:pubsub-api")
 	router := NewPubSubResourceRouter()
-
 	resp := requestResource(t, router, http.MethodPost, "/pubsub/channels", `{"name":"events"}`)
 	if resp.Code != http.StatusServiceUnavailable {
 		t.Fatalf("missing resource Redis status = %d, body = %s", resp.Code, resp.Body.String())
@@ -222,7 +248,6 @@ func TestPubSubResourceAPIRequiresExplicitFatlineScope(t *testing.T) {
 	t.Setenv("PUBSUB_RESOURCE_REDIS_URI", "127.0.0.1:1")
 	t.Setenv("FATLINE_SCOPE", "")
 	router := NewPubSubResourceRouter()
-
 	resp := requestResource(t, router, http.MethodPost, "/pubsub/channels", `{"name":"events"}`)
 	if resp.Code != http.StatusServiceUnavailable {
 		t.Fatalf("missing FATLINE_SCOPE status = %d, body = %s", resp.Code, resp.Body.String())
