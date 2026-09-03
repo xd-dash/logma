@@ -36,11 +36,11 @@ type simpleSubscribeResponse struct {
 }
 
 type simpleState struct {
-	Channels          []string `json:"channels"`
-	Subscriptions     []string `json:"subscriptions"`
-	Publishers        []string `json:"publishers"`
-	Groups            []string `json:"groups"`
-	PublisherGroups   []string `json:"publisherGroups"`
+	Channels        []string `json:"channels"`
+	Subscriptions   []string `json:"subscriptions"`
+	Publishers      []string `json:"publishers"`
+	Groups          []string `json:"groups"`
+	PublisherGroups []string `json:"publisherGroups"`
 }
 
 func newSimplePubSubAPI() *simplePubSubAPI {
