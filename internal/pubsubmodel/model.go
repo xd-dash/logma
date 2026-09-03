@@ -37,8 +37,26 @@ type Callback struct {
 	Lua     *LuaCallback     `json:"lua,omitempty"`
 }
 
+// WebhookCallback preserves the historical Logma ability for one callback
+// definition to fan out to one or many HTTP endpoints. CallbackURL is the
+// compatibility/single-target form; CallbackURLs is the multi-target form.
+// At least one non-empty target is required.
 type WebhookCallback struct {
-	CallbackURL string `json:"callbackURL"`
+	CallbackURL  string   `json:"callbackURL,omitempty"`
+	CallbackURLs []string `json:"callbackURLs,omitempty"`
+}
+
+func (w WebhookCallback) URLs() []string {
+	urls := make([]string, 0, 1+len(w.CallbackURLs))
+	if url := strings.TrimSpace(w.CallbackURL); url != "" {
+		urls = append(urls, url)
+	}
+	for _, url := range w.CallbackURLs {
+		if url = strings.TrimSpace(url); url != "" {
+			urls = append(urls, url)
+		}
+	}
+	return urls
 }
 
 type LuaCallback struct {
@@ -52,8 +70,8 @@ func (c Callback) Validate() error {
 
 	switch c.Type {
 	case CallbackWebhook:
-		if c.Webhook == nil || strings.TrimSpace(c.Webhook.CallbackURL) == "" {
-			return errors.New("webhook callbackURL is required")
+		if c.Webhook == nil || len(c.Webhook.URLs()) == 0 {
+			return errors.New("webhook requires at least one callback URL")
 		}
 		if c.Lua != nil {
 			return errors.New("webhook callback cannot include lua configuration")
