@@ -12,10 +12,10 @@ import (
 )
 
 type fakePubSubResourceStore struct {
-	channels       map[string]pubsubmodel.Channel
-	callbacks      map[string]pubsubmodel.Callback
-	subscribers    map[string]pubsubmodel.Subscriber
-	putSubErr      error
+	channels          map[string]pubsubmodel.Channel
+	callbacks         map[string]pubsubmodel.Callback
+	subscribers       map[string]pubsubmodel.Subscriber
+	putSubErr         error
 	deleteChannelErr  error
 	deleteCallbackErr error
 }
