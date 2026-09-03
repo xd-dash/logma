@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -84,6 +85,12 @@ func normalizeDescriptors(handlers ChannelHandlers, descriptors []SubscriptionDe
 	for _, descriptor := range byChannel {
 		result = append(result, descriptor)
 	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Channel != result[j].Channel {
+			return result[i].Channel < result[j].Channel
+		}
+		return result[i].ID < result[j].ID
+	})
 	return result
 }
 
@@ -154,6 +161,7 @@ func (lease *RuntimeLease) heartbeat(ctx context.Context) {
 		}
 	}
 }
+
 func (lease *RuntimeLease) Close() error {
 	var closeErr error
 	lease.closeOnce.Do(func() {
@@ -207,6 +215,7 @@ func listRuntimeRecordsAt(ctx context.Context, client *redis.Client, indexKey st
 	if err != nil {
 		return nil, err
 	}
+	sort.Strings(keys)
 	records := make([]RuntimeRecord, 0, len(keys))
 	for _, key := range keys {
 		record, err := LoadRuntimeRecord(ctx, client, key)
