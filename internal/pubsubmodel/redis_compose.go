@@ -37,53 +37,64 @@ func (s *RedisStore) CreateWebhookSubscription(ctx context.Context, channel Chan
 	}
 
 	channelKey := s.keys.Channel(channelName)
+	channelSubscribersKey := s.keys.ChannelSubscribers(channelName)
+	channelPublishersKey := s.keys.ChannelPublishers(channelName)
 	callbackKey := s.keys.Callback(callbackID)
 	callbackURLsKey := s.keys.CallbackURLs(callbackID)
+	callbackSubscribersKey := s.keys.CallbackSubscribers(callbackID)
 	subscriberKey := s.keys.Subscriber(subscriberID)
 	subscriberCallbacksKey := s.keys.SubscriberCallbacks(subscriberID)
 	watchKeys := []string{
 		channelKey,
-		s.keys.ChannelSubscribers(channelName),
+		channelSubscribersKey,
+		channelPublishersKey,
 		callbackKey,
 		callbackURLsKey,
-		s.keys.CallbackSubscribers(callbackID),
+		callbackSubscribersKey,
 		subscriberKey,
 		subscriberCallbacksKey,
 	}
 
 	return s.watch(ctx, func(tx *redis.Tx) error {
-		callbackExists, err := tx.Exists(ctx, callbackKey).Result()
+		callbackMaterial, err := tx.Exists(ctx, callbackKey, callbackURLsKey, callbackSubscribersKey).Result()
 		if err != nil {
 			return err
 		}
-		if callbackExists != 0 {
-			return fmt.Errorf("%w: callback %s", ErrAlreadyExists, callbackID)
+		if callbackMaterial != 0 {
+			return fmt.Errorf("%w: callback %s already has provider material", ErrAlreadyExists, callbackID)
 		}
-		subscriberExists, err := tx.Exists(ctx, subscriberKey).Result()
+		subscriberMaterial, err := tx.Exists(ctx, subscriberKey, subscriberCallbacksKey).Result()
 		if err != nil {
 			return err
 		}
-		if subscriberExists != 0 {
-			return fmt.Errorf("%w: subscriber %s", ErrAlreadyExists, subscriberID)
+		if subscriberMaterial != 0 {
+			return fmt.Errorf("%w: subscriber %s already has provider material", ErrAlreadyExists, subscriberID)
 		}
 
-		channelExists, err := tx.Exists(ctx, channelKey).Result()
+		channelHashExists, err := tx.Exists(ctx, channelKey).Result()
 		if err != nil {
 			return err
 		}
-		if channelExists != 0 {
+		channelMaterial, err := tx.Exists(ctx, channelKey, channelSubscribersKey, channelPublishersKey).Result()
+		if err != nil {
+			return err
+		}
+		if channelHashExists == 0 && channelMaterial != 0 {
+			return fmt.Errorf("channel %s has orphan provider material", channelName)
+		}
+		if channelHashExists != 0 {
 			storedChannelName, err := tx.HGet(ctx, channelKey, "name").Result()
 			if err != nil {
 				return fmt.Errorf("decode existing channel %s: %w", channelName, err)
 			}
-			if normalizeIdentity(storedChannelName) != channelName {
-				return fmt.Errorf("channel %s has mismatched stored identity %q", channelName, storedChannelName)
+			if err := storedIdentity("channel", channelName, storedChannelName); err != nil {
+				return err
 			}
 		}
 
 		urls := uniqueTrimmed(callback.Webhook.URLs())
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-			if channelExists == 0 {
+			if channelHashExists == 0 {
 				pipe.HSet(ctx, channelKey, map[string]any{"name": channelName})
 				pipe.SAdd(ctx, s.keys.Channels(), channelName)
 			}
@@ -95,8 +106,8 @@ func (s *RedisStore) CreateWebhookSubscription(ctx context.Context, channel Chan
 			pipe.HSet(ctx, subscriberKey, map[string]any{"id": subscriberID, "channel": channelName})
 			pipe.SAdd(ctx, subscriberCallbacksKey, callbackID)
 			pipe.SAdd(ctx, s.keys.Subscribers(), subscriberID)
-			pipe.SAdd(ctx, s.keys.ChannelSubscribers(channelName), subscriberID)
-			pipe.SAdd(ctx, s.keys.CallbackSubscribers(callbackID), subscriberID)
+			pipe.SAdd(ctx, channelSubscribersKey, subscriberID)
+			pipe.SAdd(ctx, callbackSubscribersKey, subscriberID)
 			return nil
 		})
 		return err
