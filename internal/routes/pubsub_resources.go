@@ -25,7 +25,10 @@ type pubSubResourceAPI struct {
 }
 
 func newPubSubResourceAPI() *pubSubResourceAPI {
-	return &pubSubResourceAPI{store: newPubSubResourceRedisStore}
+	store, err := newPubSubResourceRedisStore()
+	return &pubSubResourceAPI{store: func() (pubSubResourceStore, error) {
+		return store, err
+	}}
 }
 
 // NewPubSubResourceRouter exposes the additive resource API independently of
