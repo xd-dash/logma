@@ -2,8 +2,8 @@ package pubsubruntime
 
 import (
 	"context"
-	"reflect"
 	"testing"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/xd-dash/logma/internal/pubsubmodel"
@@ -19,6 +19,8 @@ func TestScopedRuntimeUsesCanonicalTransportAddress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(runtime.Close)
+
 	var transport string
 	runtime.subscribe = func(_ context.Context, _ *redis.Client, channel string, _ func(string)) Subscriber {
 		transport = channel
@@ -43,33 +45,50 @@ func TestSubscriptionControllerActivateRefreshesCurrentDefinition(t *testing.T) 
 	}
 	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:0"})
 	t.Cleanup(func() { _ = client.Close() })
+
 	var dispatch func(string)
-	var deliveries []string
+	deliveries := make(chan string, 2)
 	runtime := newWithDependencies(client, store, func(_ context.Context, _ *redis.Client, _ string, onMessage func(string)) Subscriber {
 		dispatch = onMessage
 		return newFakeSubscriber()
 	}, func(_ context.Context, url, payload string) error {
-		deliveries = append(deliveries, url+"|"+payload)
+		deliveries <- url + "|" + payload
 		return nil
 	})
 	controller, err := NewSubscriptionController(runtime)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer controller.Close()
+	defer func() {
+		controller.Close()
+		runtime.Close()
+	}()
 
 	if err := controller.ActivateSubscription(context.Background(), "sub-a"); err != nil {
 		t.Fatal(err)
 	}
 	dispatch("first")
+	select {
+	case got := <-deliveries:
+		if want := "https://one.example/hook|first"; got != want {
+			t.Fatalf("first delivery = %q, want %q", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first reconciled delivery did not arrive")
+	}
+
 	store.callback = pubsubmodel.Callback{ID: "hook", Type: pubsubmodel.CallbackWebhook, Webhook: &pubsubmodel.WebhookCallback{CallbackURL: "https://two.example/hook"}}
 	if err := controller.ActivateSubscription(context.Background(), "sub-a"); err != nil {
 		t.Fatal(err)
 	}
 	dispatch("second")
-	want := []string{"https://one.example/hook|first", "https://two.example/hook|second"}
-	if !reflect.DeepEqual(deliveries, want) {
-		t.Fatalf("deliveries = %#v, want %#v", deliveries, want)
+	select {
+	case got := <-deliveries:
+		if want := "https://two.example/hook|second"; got != want {
+			t.Fatalf("second delivery = %q, want %q", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second reconciled delivery did not arrive")
 	}
 }
 
