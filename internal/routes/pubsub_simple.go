@@ -13,10 +13,10 @@ import (
 	"github.com/xd-dash/logma/internal/pubsubmodel"
 )
 
-// simpleSubscriptionController is supplied only by a runtime composition that
+// SubscriptionController is supplied only by a runtime composition that
 // actually owns subscription transport authority. The simple graph facade does
 // not manufacture SUBSCRIBE authority from its resource-store credential.
-type simpleSubscriptionController interface {
+type SubscriptionController interface {
 	ActivateSubscription(context.Context, string) error
 	ShutdownSubscription(context.Context, string) error
 }
@@ -28,7 +28,7 @@ type simpleSubscriptionController interface {
 type simplePubSubAPI struct {
 	store      func() (pubSubResourceStore, error)
 	newID      func() (string, error)
-	controller simpleSubscriptionController
+	controller SubscriptionController
 }
 
 type simpleSubscribeRequest struct {
@@ -87,7 +87,7 @@ func NewSimplePubSubRouter() http.Handler {
 
 // NewSimplePubSubRouterWithSubscriptionController composes the same small API
 // with explicitly supplied runtime authority.
-func NewSimplePubSubRouterWithSubscriptionController(controller simpleSubscriptionController) http.Handler {
+func NewSimplePubSubRouterWithSubscriptionController(controller SubscriptionController) http.Handler {
 	api := newSimplePubSubAPI()
 	api.controller = controller
 	return newSimplePubSubRouter(api)
