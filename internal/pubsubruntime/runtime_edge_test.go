@@ -70,6 +70,63 @@ func TestFailedReconcileToNewChannelPreservesKnownGoodHandler(t *testing.T) {
 	}
 }
 
+func TestFailedAttachAfterNewListenerReadyCleansListenerAndPreservesOldHandler(t *testing.T) {
+	store := &mutableRuntimeStore{
+		channels: map[string]pubsubmodel.Channel{
+			"events":     {Name: "events"},
+			"events-new": {Name: "events-new"},
+		},
+		subscriber: pubsubmodel.Subscriber{ID: "sub-a", Channel: "events", CallbackIDs: []string{"hook"}},
+		callback:   pubsubmodel.Callback{ID: "hook", Type: pubsubmodel.CallbackWebhook, Webhook: &pubsubmodel.WebhookCallback{CallbackURL: "https://old.example/hook"}},
+	}
+	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:0"})
+	t.Cleanup(func() { _ = client.Close() })
+
+	dispatches := make(map[string]func(string))
+	deliveries := make(chan string, 4)
+	runtime := newWithDependencies(client, store, func(_ context.Context, _ *redis.Client, channel string, onMessage func(string)) Subscriber {
+		dispatches[channel] = onMessage
+		return newFakeSubscriber()
+	}, func(_ context.Context, url, payload string) error {
+		deliveries <- url + "|" + payload
+		return nil
+	})
+	controller, err := NewSubscriptionController(runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		controller.Close()
+		runtime.Close()
+	})
+
+	if err := controller.ActivateSubscription(context.Background(), "sub-a"); err != nil {
+		t.Fatalf("initial activation: %v", err)
+	}
+
+	// The replacement listener reaches initial readiness, but the callback
+	// declaration becomes unsupported before AttachSubscriber re-materializes it.
+	store.subscriber = pubsubmodel.Subscriber{ID: "sub-a", Channel: "events-new", CallbackIDs: []string{"hook"}}
+	store.callback = pubsubmodel.Callback{ID: "hook", Type: pubsubmodel.CallbackLua, Lua: &pubsubmodel.LuaCallback{Name: "unsupported-at-runtime"}}
+
+	if err := controller.ActivateSubscription(context.Background(), "sub-a"); err == nil {
+		t.Fatal("reconcile unexpectedly accepted unsupported replacement callback")
+	}
+	if runtime.Active("events-new") {
+		t.Fatal("attach failure left operation-created replacement listener active")
+	}
+
+	dispatches["events"]("after-attach-failure")
+	select {
+	case got := <-deliveries:
+		if got != "https://old.example/hook|after-attach-failure" {
+			t.Fatalf("attach failure changed old active handler: %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("old handler disappeared after replacement attach failure")
+	}
+}
+
 func TestDetachedSubscriberRejectsStaleDispatchSnapshot(t *testing.T) {
 	store := fakeStore{
 		channels:    map[string]pubsubmodel.Channel{"events": {Name: "events"}},
