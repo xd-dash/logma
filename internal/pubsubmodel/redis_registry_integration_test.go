@@ -27,7 +27,7 @@ func TestRedisStoreResourceRegistries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	keys, err := NewRedisKeys(scope)
+	keys, err := NewResourceKeysV2(scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,6 +58,12 @@ func TestRedisStoreResourceRegistries(t *testing.T) {
 	assertSet(t, ctx, client, keys.Channels(), []string{channelA.Name, channelB.Name})
 	assertSet(t, ctx, client, keys.Callbacks(), []string{callbackA.ID, callbackB.ID})
 	assertSet(t, ctx, client, keys.Subscribers(), []string{subscriber.ID})
+
+	for _, key := range []string{keys.Channels(), keys.Callbacks(), keys.Subscribers()} {
+		if len(key) <= len(scope+":logma:pubsub:registry:") || key[:len(scope+":logma:pubsub:registry:")] != scope+":logma:pubsub:registry:" {
+			t.Fatalf("registry key %q does not use v2 registry grammar", key)
+		}
+	}
 
 	if err := store.PutChannel(ctx, channelA); err != nil {
 		t.Fatalf("repeat put channel: %v", err)
