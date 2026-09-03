@@ -2,31 +2,73 @@ package pubsubruntime
 
 import (
 	"context"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/xd-dash/logma/internal/pubsubmodel"
 )
 
-type blockingPublisherProvider struct {
-	calls   atomic.Int32
-	started chan struct{}
-	release chan struct{}
+type mutablePublisherStore struct {
+	mu        sync.RWMutex
+	publisher pubsubmodel.Publisher
+	channels  map[string]pubsubmodel.Channel
 }
 
-func (p *blockingPublisherProvider) EnsureActive(context.Context, pubsubmodel.Publisher, pubsubmodel.Channel) error {
-	if p.calls.Add(1) == 1 {
+func (s *mutablePublisherStore) GetPublisher(context.Context, string) (pubsubmodel.Publisher, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.publisher, nil
+}
+
+func (s *mutablePublisherStore) GetChannel(_ context.Context, name string) (pubsubmodel.Channel, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	channel, ok := s.channels[name]
+	if !ok {
+		return pubsubmodel.Channel{}, pubsubmodel.ErrNotFound
+	}
+	return channel, nil
+}
+
+func (s *mutablePublisherStore) move(channel string) {
+	s.mu.Lock()
+	s.publisher.Channel = channel
+	s.mu.Unlock()
+}
+
+type blockingPublisherProvider struct {
+	mu       sync.Mutex
+	channels []string
+	started  chan struct{}
+	release  chan struct{}
+}
+
+func (p *blockingPublisherProvider) EnsureActive(_ context.Context, _ pubsubmodel.Publisher, channel pubsubmodel.Channel) error {
+	p.mu.Lock()
+	p.channels = append(p.channels, channel.Name)
+	call := len(p.channels)
+	p.mu.Unlock()
+	if call == 1 {
 		close(p.started)
 	}
 	<-p.release
 	return nil
 }
 
-func TestPublisherReconcilerSerializesConcurrentSameIdentity(t *testing.T) {
-	store := publisherTestStore{
+func (p *blockingPublisherProvider) observedChannels() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.channels...)
+}
+
+func TestPublisherReconcilerSerializesAndReReadsConcurrentSameIdentity(t *testing.T) {
+	store := &mutablePublisherStore{
 		publisher: pubsubmodel.Publisher{ID: "stonks-live", Channel: "market:quotes", Type: "stonks"},
-		channel:   pubsubmodel.Channel{Name: "market:quotes"},
+		channels: map[string]pubsubmodel.Channel{
+			"market:quotes": {Name: "market:quotes"},
+			"market:alt":    {Name: "market:alt"},
+		},
 	}
 	provider := &blockingPublisherProvider{started: make(chan struct{}), release: make(chan struct{})}
 	registry := NewPublisherRegistry()
@@ -47,12 +89,14 @@ func TestPublisherReconcilerSerializesConcurrentSameIdentity(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("provider did not start")
 	}
-	go func() { second <- reconciler.Reconcile(context.Background(), "stonks-live") }()
 
+	store.move("market:alt")
+	go func() { second <- reconciler.Reconcile(context.Background(), "stonks-live") }()
 	time.Sleep(20 * time.Millisecond)
-	if got := provider.calls.Load(); got != 1 {
-		t.Fatalf("concurrent same-Publisher reconcile entered provider %d times before first completion, want 1", got)
+	if got := provider.observedChannels(); len(got) != 1 || got[0] != "market:quotes" {
+		t.Fatalf("provider entered before first reconcile completed: %v", got)
 	}
+
 	close(provider.release)
 	if err := <-first; err != nil {
 		t.Fatalf("first reconcile: %v", err)
@@ -60,7 +104,7 @@ func TestPublisherReconcilerSerializesConcurrentSameIdentity(t *testing.T) {
 	if err := <-second; err != nil {
 		t.Fatalf("serialized reconcile: %v", err)
 	}
-	if got := provider.calls.Load(); got != 2 {
-		t.Fatalf("provider calls after successful waiter re-read = %d, want 2", got)
+	if got := provider.observedChannels(); len(got) != 2 || got[0] != "market:quotes" || got[1] != "market:alt" {
+		t.Fatalf("provider observed channels %v, want [market:quotes market:alt]", got)
 	}
 }
