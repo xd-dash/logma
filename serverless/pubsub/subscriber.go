@@ -15,11 +15,14 @@ const (
 )
 
 type Subscriber struct {
-	stopped   chan struct{}
+	stopped chan struct{}
+
+	readyMu   sync.Mutex
 	ready     chan struct{}
-	readyOnce sync.Once
-	errMu     sync.RWMutex
-	lastErr   error
+	connected bool
+
+	errMu   sync.RWMutex
+	lastErr error
 }
 
 func Subscribe(ctx context.Context, client *redis.Client, channel string, onMessage func(payload string)) *Subscriber {
@@ -30,10 +33,16 @@ func Subscribe(ctx context.Context, client *redis.Client, channel string, onMess
 
 func (s *Subscriber) Stopped() <-chan struct{} { return s.stopped }
 
-// Ready closes after Redis has acknowledged the subscription at least once.
-// Callers that must not start a producer before its consumer exists can wait
-// on Ready together with their own context cancellation.
-func (s *Subscriber) Ready() <-chan struct{} { return s.ready }
+// Ready returns the readiness signal for the current Redis connection state.
+// The returned channel is closed while Redis has acknowledged the current
+// subscription and is replaced with a new open channel after that connection is
+// lost. Callers that reconcile an already-running Subscriber can therefore wait
+// for current readiness rather than relying on a one-time historical ACK.
+func (s *Subscriber) Ready() <-chan struct{} {
+	s.readyMu.Lock()
+	defer s.readyMu.Unlock()
+	return s.ready
+}
 
 // LastError returns the most recent Redis subscription acknowledgement error.
 // It is diagnostic state only; Subscribe continues its bounded reconnect loop.
@@ -53,11 +62,30 @@ func (s *Subscriber) setLastError(err error) {
 }
 
 func (s *Subscriber) markReady() {
-	s.readyOnce.Do(func() { close(s.ready) })
+	s.readyMu.Lock()
+	defer s.readyMu.Unlock()
+	if s.connected {
+		return
+	}
+	close(s.ready)
+	s.connected = true
+}
+
+func (s *Subscriber) markNotReady() {
+	s.readyMu.Lock()
+	defer s.readyMu.Unlock()
+	if !s.connected {
+		return
+	}
+	s.ready = make(chan struct{})
+	s.connected = false
 }
 
 func (s *Subscriber) run(ctx context.Context, client *redis.Client, channel string, onMessage func(payload string)) {
-	defer close(s.stopped)
+	defer func() {
+		s.markNotReady()
+		close(s.stopped)
+	}()
 	delay := reconnectMinDelay
 	for {
 		if ctx.Err() != nil {
@@ -91,6 +119,7 @@ func (s *Subscriber) run(ctx context.Context, client *redis.Client, channel stri
 				return
 			case message, ok := <-ps.Channel():
 				if !ok {
+					s.markNotReady()
 					_ = ps.Close()
 					break receive
 				}
