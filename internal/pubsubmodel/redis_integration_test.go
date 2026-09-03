@@ -73,6 +73,31 @@ func TestRedisStoreGraphRoundTrip(t *testing.T) {
 	assertSet(t, ctx, client, keys.ChannelPublishers(channelA.Name), []string{publisher.ID})
 	assertSet(t, ctx, client, keys.SubscriptionGroupSubscribers(group.ID), []string{subscriber.ID})
 
+	gotChannel, err := store.GetChannel(ctx, channelA.Name)
+	if err != nil || !reflect.DeepEqual(gotChannel, channelA) {
+		t.Fatalf("GetChannel = %#v, %v; want %#v", gotChannel, err, channelA)
+	}
+	gotCallback, err := store.GetCallback(ctx, callbackA.ID)
+	wantCallback := Callback{ID: callbackA.ID, Type: CallbackWebhook, Webhook: &WebhookCallback{CallbackURLs: []string{"https://one.example/callback", "https://two.example/callback"}}}
+	if err != nil || !reflect.DeepEqual(gotCallback, wantCallback) {
+		t.Fatalf("GetCallback = %#v, %v; want %#v", gotCallback, err, wantCallback)
+	}
+	gotSubscriber, err := store.GetSubscriber(ctx, subscriber.ID)
+	if err != nil || !reflect.DeepEqual(gotSubscriber, subscriber) {
+		t.Fatalf("GetSubscriber = %#v, %v; want %#v", gotSubscriber, err, subscriber)
+	}
+	gotPublisher, err := store.GetPublisher(ctx, publisher.ID)
+	if err != nil || !reflect.DeepEqual(gotPublisher, publisher) {
+		t.Fatalf("GetPublisher = %#v, %v; want %#v", gotPublisher, err, publisher)
+	}
+	gotGroup, err := store.GetSubscriptionGroup(ctx, group.ID)
+	if err != nil || !reflect.DeepEqual(gotGroup, group) {
+		t.Fatalf("GetSubscriptionGroup = %#v, %v; want %#v", gotGroup, err, group)
+	}
+	assertIDs(t, store.ChannelSubscriberIDs(ctx, channelA.Name), []string{subscriber.ID})
+	assertIDs(t, store.ChannelPublisherIDs(ctx, channelA.Name), []string{publisher.ID})
+	assertIDs(t, store.CallbackSubscriberIDs(ctx, callbackA.ID), []string{subscriber.ID})
+
 	updatedSubscriber := Subscriber{ID: subscriber.ID, Channel: channelB.Name, CallbackIDs: []string{callbackB.ID}}
 	if err := store.PutSubscriber(ctx, updatedSubscriber); err != nil {
 		t.Fatalf("update subscriber: %v", err)
@@ -82,6 +107,10 @@ func TestRedisStoreGraphRoundTrip(t *testing.T) {
 	assertSet(t, ctx, client, keys.CallbackSubscribers(callbackA.ID), nil)
 	assertSet(t, ctx, client, keys.CallbackSubscribers(callbackB.ID), []string{subscriber.ID})
 	assertSet(t, ctx, client, keys.SubscriberCallbacks(subscriber.ID), []string{callbackB.ID})
+	gotSubscriber, err = store.GetSubscriber(ctx, subscriber.ID)
+	if err != nil || !reflect.DeepEqual(gotSubscriber, updatedSubscriber) {
+		t.Fatalf("updated GetSubscriber = %#v, %v; want %#v", gotSubscriber, err, updatedSubscriber)
+	}
 
 	if err := store.DeleteCallback(ctx, callbackB.ID); err == nil {
 		t.Fatal("DeleteCallback succeeded while callback remained referenced")
@@ -92,6 +121,9 @@ func TestRedisStoreGraphRoundTrip(t *testing.T) {
 
 	if err := store.DeleteSubscriber(ctx, subscriber.ID); err != nil {
 		t.Fatalf("delete subscriber: %v", err)
+	}
+	if _, err := store.GetSubscriber(ctx, subscriber.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetSubscriber after delete error = %v, want ErrNotFound", err)
 	}
 	if err := store.DeletePublisher(ctx, publisher.ID); err != nil {
 		t.Fatalf("delete publisher: %v", err)
@@ -150,6 +182,16 @@ func assertSet(t *testing.T, ctx context.Context, client *redis.Client, key stri
 		if got[i] != want[i] {
 			t.Fatalf("SMEMBERS %s = %#v, want %#v", key, got, want)
 		}
+	}
+}
+
+func assertIDs(t *testing.T, got []string, err error, want []string) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("IDs = %#v, want %#v", got, want)
 	}
 }
 
