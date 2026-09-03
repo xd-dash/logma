@@ -3,6 +3,7 @@ package pubsubmodel
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/redis/go-redis/v9"
@@ -22,7 +23,14 @@ func (s *RedisStore) DeleteSubscriber(ctx context.Context, id string) error {
 	return s.client.Watch(ctx, func(tx *redis.Tx) error {
 		channel, err := tx.HGet(ctx, subscriberKey, "channel").Result()
 		if err == redis.Nil {
-			return nil
+			// Idempotent deletion should also heal a stale discovery/forward index
+			// when the resource HASH has already disappeared.
+			_, cleanupErr := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.Del(ctx, callbacksKey)
+				pipe.SRem(ctx, s.keys.Subscribers(), id)
+				return nil
+			})
+			return cleanupErr
 		}
 		if err != nil {
 			return err
@@ -95,7 +103,7 @@ func (s *RedisStore) DeleteCallback(ctx context.Context, id string) error {
 			return err
 		}
 		if references != 0 {
-			return errors.New("callback is still referenced by subscribers")
+			return fmt.Errorf("%w: callback %s has subscribers", ErrReferenced, id)
 		}
 
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
@@ -129,7 +137,7 @@ func (s *RedisStore) DeleteChannel(ctx context.Context, name string) error {
 			return err
 		}
 		if subscribers != 0 || publishers != 0 {
-			return errors.New("channel is still referenced by subscribers or publishers")
+			return fmt.Errorf("%w: channel %s has subscribers or publishers", ErrReferenced, name)
 		}
 
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
