@@ -61,6 +61,29 @@ func TestLogmaPubSubGraphReadOnlyProviderDoesNotGrantMutation(t *testing.T) {
 	}
 }
 
+func TestLogmaPubSubGraphWriteOnlyProviderContainsMutationPrerequisites(t *testing.T) {
+	scope, _ := ParseScope("dev-safe")
+	req, err := CompileRedisRequirements(scope, Grant{
+		Capability: CapabilityLogmaPubSubGraph,
+		Access:     AccessWrite,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := map[string]bool{}
+	for _, command := range req.Commands {
+		set[command] = true
+	}
+	for _, required := range []string{"hget", "smembers", "scard", "exists", "watch", "multi", "exec", "hset", "sadd", "srem", "del"} {
+		if !set[required] {
+			t.Fatalf("write-only graph requirements missing mutation prerequisite %q: %v", required, req.Commands)
+		}
+	}
+	if set["hgetall"] {
+		t.Fatalf("write-only graph grant unexpectedly contains independent read command hgetall")
+	}
+}
+
 func TestRedisProviderFailsClosedForUnsupportedCapabilityOrAccess(t *testing.T) {
 	scope, _ := ParseScope("dev-safe")
 	if _, err := CompileRedisRequirements(scope, Grant{Capability: Capability("unknown"), Access: AccessRead}); err == nil {
