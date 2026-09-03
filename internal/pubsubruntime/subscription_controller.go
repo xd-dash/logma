@@ -43,11 +43,12 @@ func NewSubscriptionController(runtime *Runtime) (*SubscriptionController, error
 }
 
 // ActivateSubscription is ensure-current rather than merely ensure-present.
-// Repeated activation re-reads the Subscriber and Callback declarations. The
-// previous known-good handler remains installed until the replacement listener
-// is currently ready; first activation installs its handler before waiting for
-// the initial ACK so there is no ACK-before-handler window. Same-identity
-// operations serialize, while different identities remain independent.
+// Repeated activation re-reads the Subscriber and Callback declarations. When a
+// replacement needs a new listener, the previous known-good handler remains
+// installed until that listener has completed its initial SUBSCRIBE ACK. First
+// activation installs its handler before waiting for the initial ACK so there is
+// no ACK-before-handler window. Same-identity operations serialize, while
+// different identities remain independent.
 func (c *SubscriptionController) ActivateSubscription(ctx context.Context, id string) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -126,9 +127,11 @@ func (c *SubscriptionController) activate(ctx context.Context, id string, preser
 	}
 
 	if preserveExisting {
-		// A reconciliation already has a known-good handler. Keep it installed
-		// until the target listener is currently ready; a timeout or reconnecting
-		// Redis connection therefore cannot erase the old working definition.
+		// A reconciliation already has a known-good handler. If the target is a
+		// newly-created listener (for example after a Channel move), keep the old
+		// handler until that target receives its initial ACK. For an already-
+		// established listener Ready is intentionally only historical initial
+		// readiness; go-redis owns transparent reconnect/resubscribe afterward.
 		if err := c.runtime.WaitReady(ctx, subscriber.Channel); err != nil {
 			if channelHandle != nil {
 				c.runtime.deactivateIfIdle(subscriber.Channel, channelHandle.activation)
