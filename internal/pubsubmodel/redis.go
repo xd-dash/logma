@@ -42,16 +42,20 @@ func (k RedisKeys) Channels() string    { return k.registry("channels") }
 func (k RedisKeys) Callbacks() string   { return k.registry("callbacks") }
 func (k RedisKeys) Subscribers() string { return k.registry("subscribers") }
 
-func (k RedisKeys) Channel(name string) string              { return k.resource("channel", strings.TrimSpace(name)) }
-func (k RedisKeys) ChannelSubscribers(name string) string   { return k.Channel(name) + ":subscribers" }
-func (k RedisKeys) ChannelPublishers(name string) string    { return k.Channel(name) + ":publishers" }
-func (k RedisKeys) Callback(id string) string               { return k.resource("callback", strings.TrimSpace(id)) }
-func (k RedisKeys) CallbackSubscribers(id string) string    { return k.Callback(id) + ":subscribers" }
-func (k RedisKeys) CallbackURLs(id string) string           { return k.Callback(id) + ":urls" }
-func (k RedisKeys) Subscriber(id string) string             { return k.resource("subscriber", strings.TrimSpace(id)) }
-func (k RedisKeys) SubscriberCallbacks(id string) string    { return k.Subscriber(id) + ":callbacks" }
-func (k RedisKeys) Publisher(id string) string              { return k.resource("publisher", strings.TrimSpace(id)) }
-func (k RedisKeys) SubscriptionGroup(id string) string      { return k.resource("group", strings.TrimSpace(id)) }
+func (k RedisKeys) Channel(name string) string            { return k.resource("channel", strings.TrimSpace(name)) }
+func (k RedisKeys) ChannelSubscribers(name string) string { return k.Channel(name) + ":subscribers" }
+func (k RedisKeys) ChannelPublishers(name string) string  { return k.Channel(name) + ":publishers" }
+func (k RedisKeys) Callback(id string) string             { return k.resource("callback", strings.TrimSpace(id)) }
+func (k RedisKeys) CallbackSubscribers(id string) string  { return k.Callback(id) + ":subscribers" }
+func (k RedisKeys) CallbackURLs(id string) string         { return k.Callback(id) + ":urls" }
+func (k RedisKeys) Subscriber(id string) string {
+	return k.resource("subscriber", strings.TrimSpace(id))
+}
+func (k RedisKeys) SubscriberCallbacks(id string) string { return k.Subscriber(id) + ":callbacks" }
+func (k RedisKeys) Publisher(id string) string           { return k.resource("publisher", strings.TrimSpace(id)) }
+func (k RedisKeys) SubscriptionGroup(id string) string {
+	return k.resource("group", strings.TrimSpace(id))
+}
 func (k RedisKeys) SubscriptionGroupSubscribers(id string) string {
 	return k.SubscriptionGroup(id) + ":subscribers"
 }
