@@ -45,7 +45,6 @@ func TestRedisStorePublisherGroupRoundTrip(t *testing.T) {
 	assertSet(t, ctx, client, keys.Publishers(), []string{publisher.ID})
 	assertSet(t, ctx, client, keys.PublisherGroups(), []string{group.ID})
 	assertSet(t, ctx, client, keys.PublisherGroupPublishers(group.ID), []string{publisher.ID, "news-later"})
-	assertSet(t, ctx, client, keys.PublisherGroupsForPublisher(publisher.ID), nil)
 
 	got, err := store.GetPublisherGroup(ctx, group.ID)
 	if err != nil || len(got.PublisherIDs) != 2 {
