@@ -3,6 +3,7 @@ package pubsubmodel
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/redis/go-redis/v9"
 )
