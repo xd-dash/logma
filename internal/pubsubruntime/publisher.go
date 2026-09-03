@@ -95,43 +95,50 @@ func NewPublisherReconciler(store PublisherStore, providers *PublisherRegistry) 
 	}, nil
 }
 
-// Reconcile coalesces concurrent work for the same Publisher identity. Provider
-// idempotence is still required across time, but providers do not also need to
-// implement duplicate-start exclusion for simultaneous identical commands.
-// Different Publisher identities remain independent.
+// Reconcile serializes work for the same Publisher identity. A caller arriving
+// behind successful work re-reads current desired state instead of assuming the
+// earlier command reconciled the declaration it now observes. Providers remain
+// idempotent across time; different Publisher identities remain independent.
 func (r *PublisherReconciler) Reconcile(ctx context.Context, id string) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return errors.New("publisher id is required")
 	}
 
-	r.mu.Lock()
-	if r.closed {
-		r.mu.Unlock()
-		return errors.New("publisher reconciler is closed")
-	}
-	if pending, ok := r.pending[id]; ok {
-		done := pending.done
-		r.mu.Unlock()
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-done:
-			return pending.err
+	for {
+		r.mu.Lock()
+		if r.closed {
+			r.mu.Unlock()
+			return errors.New("publisher reconciler is closed")
 		}
+		if pending, ok := r.pending[id]; ok {
+			done := pending.done
+			r.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-r.ctx.Done():
+				return errors.New("publisher reconciler is closed")
+			case <-done:
+				if pending.err != nil {
+					return pending.err
+				}
+				continue
+			}
+		}
+		pending := &publisherOperation{done: make(chan struct{})}
+		r.pending[id] = pending
+		r.mu.Unlock()
+
+		err := r.reconcile(ctx, id)
+
+		r.mu.Lock()
+		delete(r.pending, id)
+		pending.err = err
+		close(pending.done)
+		r.mu.Unlock()
+		return err
 	}
-	pending := &publisherOperation{done: make(chan struct{})}
-	r.pending[id] = pending
-	r.mu.Unlock()
-
-	err := r.reconcile(ctx, id)
-
-	r.mu.Lock()
-	delete(r.pending, id)
-	pending.err = err
-	close(pending.done)
-	r.mu.Unlock()
-	return err
 }
 
 func (r *PublisherReconciler) reconcile(ctx context.Context, id string) error {
