@@ -94,9 +94,12 @@ func TestRedisStoreGraphRoundTrip(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(gotGroup, group) {
 		t.Fatalf("GetSubscriptionGroup = %#v, %v; want %#v", gotGroup, err, group)
 	}
-	assertIDs(t, store.ChannelSubscriberIDs(ctx, channelA.Name), []string{subscriber.ID})
-	assertIDs(t, store.ChannelPublisherIDs(ctx, channelA.Name), []string{publisher.ID})
-	assertIDs(t, store.CallbackSubscriberIDs(ctx, callbackA.ID), []string{subscriber.ID})
+	ids, err := store.ChannelSubscriberIDs(ctx, channelA.Name)
+	assertIDs(t, ids, err, []string{subscriber.ID})
+	ids, err = store.ChannelPublisherIDs(ctx, channelA.Name)
+	assertIDs(t, ids, err, []string{publisher.ID})
+	ids, err = store.CallbackSubscriberIDs(ctx, callbackA.ID)
+	assertIDs(t, ids, err, []string{subscriber.ID})
 
 	updatedSubscriber := Subscriber{ID: subscriber.ID, Channel: channelB.Name, CallbackIDs: []string{callbackB.ID}}
 	if err := store.PutSubscriber(ctx, updatedSubscriber); err != nil {
