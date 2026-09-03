@@ -178,9 +178,13 @@ func (s *RedisStore) PutSubscriptionGroup(ctx context.Context, group Subscriptio
 	membersKey := s.keys.SubscriptionGroupSubscribers(id)
 	watchKeys := []string{groupKey, membersKey}
 	for _, subscriberID := range subscribers {
-		watchKeys = append(watchKeys, s.keys.Subscriber(subscriberID))
+		watchKeys = append(watchKeys, s.keys.Subscriber(subscriberID), s.keys.SubscriberGroups(subscriberID))
 	}
 	return s.client.Watch(ctx, func(tx *redis.Tx) error {
+		oldSubscribers, err := tx.SMembers(ctx, membersKey).Result()
+		if err != nil {
+			return err
+		}
 		if len(subscribers) > 0 {
 			references := make([]string, 0, len(subscribers))
 			for _, subscriberID := range subscribers {
@@ -194,11 +198,21 @@ func (s *RedisStore) PutSubscriptionGroup(ctx context.Context, group Subscriptio
 				return fmt.Errorf("%w: subscription group %s references missing subscriber", ErrMissingReference, id)
 			}
 		}
-		_, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+		oldSet := stringSet(oldSubscribers)
+		newSet := stringSet(subscribers)
+		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 			pipe.HSet(ctx, groupKey, map[string]any{"id": id})
 			pipe.Del(ctx, membersKey)
 			if len(subscribers) > 0 {
 				pipe.SAdd(ctx, membersKey, stringsToAny(subscribers)...)
+			}
+			for subscriberID := range oldSet {
+				if _, retained := newSet[subscriberID]; !retained {
+					pipe.SRem(ctx, s.keys.SubscriberGroups(subscriberID), id)
+				}
+			}
+			for _, subscriberID := range subscribers {
+				pipe.SAdd(ctx, s.keys.SubscriberGroups(subscriberID), id)
 			}
 			return nil
 		})
