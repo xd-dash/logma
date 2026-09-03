@@ -57,6 +57,7 @@ func TestWebhookAllowsMultipleCallbackURLs(t *testing.T) {
 				"https://example.test/one",
 				" https://example.test/two ",
 			},
+		},
 	}
 	if err := callback.Validate(); err != nil {
 		t.Fatalf("multi-URL webhook callback should be valid: %v", err)
