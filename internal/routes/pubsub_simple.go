@@ -21,6 +21,14 @@ type SubscriptionController interface {
 	ShutdownSubscription(context.Context, string) error
 }
 
+// simpleSubscriptionComposer is a provider-owned atomic primitive for the
+// common Channel + webhook Callback + Subscriber operation. Keeping atomicity
+// below the facade prevents a late conflict from leaving partial declarations
+// or overwriting an independently managed Callback.
+type simpleSubscriptionComposer interface {
+	CreateWebhookSubscription(context.Context, pubsubmodel.Channel, pubsubmodel.Callback, pubsubmodel.Subscriber) error
+}
+
 // simplePubSubAPI is the operator-facing facade over the normalized Pub/Sub
 // resource graph. The graph remains available through /pubsub/* for advanced
 // control-plane use; ordinary callers should not have to manually create a
@@ -167,15 +175,12 @@ func (a *simplePubSubAPI) subscribe(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	if err := store.PutChannel(r.Context(), channel); err != nil {
-		writeGraphMutationError(w, err, "failed to ensure Channel")
+	composer, ok := store.(simpleSubscriptionComposer)
+	if !ok {
+		http.Error(w, "atomic subscription composition is not configured", http.StatusServiceUnavailable)
 		return
 	}
-	if err := store.PutCallback(r.Context(), callback); err != nil {
-		writeGraphMutationError(w, err, "failed to ensure Callback")
-		return
-	}
-	if err := store.PutSubscriber(r.Context(), subscriber); err != nil {
+	if err := composer.CreateWebhookSubscription(r.Context(), channel, callback, subscriber); err != nil {
 		writeGraphMutationError(w, err, "failed to create Subscription")
 		return
 	}
@@ -267,15 +272,11 @@ func (a *simplePubSubAPI) runGroupOperation(w http.ResponseWriter, r *http.Reque
 	}
 	response := simpleGroupOperationResponse{Group: group.ID}
 	for _, id := range group.SubscriberIDs {
-		if _, err := store.GetSubscriber(r.Context(), id); err != nil {
+		if err := operation(r.Context(), id); err != nil {
 			if errors.Is(err, pubsubmodel.ErrNotFound) {
 				response.Missing = append(response.Missing, id)
 				continue
 			}
-			response.Failed = append(response.Failed, id)
-			continue
-		}
-		if err := operation(r.Context(), id); err != nil {
 			response.Failed = append(response.Failed, id)
 			continue
 		}
