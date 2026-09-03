@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 )
 
 const (
@@ -28,8 +29,9 @@ type deliveryDispatcher struct {
 	jobs chan deliveryJob
 	wg   sync.WaitGroup
 
-	mu     sync.RWMutex
-	closed bool
+	mu      sync.RWMutex
+	closed  bool
+	dropped atomic.Uint64
 }
 
 func newDeliveryDispatcher(send webhookSender) *deliveryDispatcher {
@@ -45,7 +47,10 @@ func (d *deliveryDispatcher) worker() {
 	defer d.wg.Done()
 	for job := range d.jobs {
 		if err := d.send(job.ctx, job.url, job.payload); err != nil && !errors.Is(err, context.Canceled) {
-			fmt.Printf("Subscriber %s webhook %s failed: %v\n", job.subscriberID, job.url, err)
+			// Callback URLs may contain signed/query-bearing material. Keep failure
+			// diagnostics tied to the durable Subscription identity instead of
+			// copying endpoint credentials into logs.
+			fmt.Printf("Subscriber %s webhook delivery failed: %v\n", job.subscriberID, err)
 		}
 	}
 }
@@ -60,9 +65,16 @@ func (d *deliveryDispatcher) dispatch(job deliveryJob) bool {
 	case d.jobs <- job:
 		return true
 	default:
-		fmt.Printf("Webhook queue full; dropping delivery for Subscriber %s to %s\n", job.subscriberID, job.url)
+		// This executes on the Redis receive path. A synchronous log write here
+		// could turn overload reporting into transport backpressure, so overflow
+		// is counted and can be observed out-of-band instead.
+		d.dropped.Add(1)
 		return false
 	}
+}
+
+func (d *deliveryDispatcher) droppedCount() uint64 {
+	return d.dropped.Load()
 }
 
 func (d *deliveryDispatcher) close() {
