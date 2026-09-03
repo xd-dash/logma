@@ -11,7 +11,6 @@ import (
 )
 
 func storedIdentity(kind, requested, stored string) error {
-	stored = normalizeIdentity(stored)
 	if stored == "" {
 		return fmt.Errorf("decode %s %s: stored identity is empty", kind, requested)
 	}
