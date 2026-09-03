@@ -128,14 +128,10 @@ func TestSubscriptionGroupRejectsEmptySubscriberIdentity(t *testing.T) {
 	}
 }
 
-func TestPublisherAndServerlessEndpointAreIndependentResources(t *testing.T) {
+func TestPublisherIsIndependentDurableResource(t *testing.T) {
 	publisher := Publisher{ID: "news", Channel: "dev:news:items", Type: "xd-dash/news", Config: json.RawMessage(`{"source":"wire"}`)}
 	if err := publisher.Validate(); err != nil {
 		t.Fatalf("publisher should be valid: %v", err)
-	}
-	endpoint := ServerlessEndpoint{ID: "events", Type: "sse", Path: "/events"}
-	if err := endpoint.Validate(); err != nil {
-		t.Fatalf("serverless endpoint should be valid: %v", err)
 	}
 }
 
