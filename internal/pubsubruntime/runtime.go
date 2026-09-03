@@ -76,15 +76,21 @@ func (a *channelActivation) putHandler(id string, handler func(string)) uint64 {
 	return token
 }
 
-func (a *channelActivation) removeHandler(id string, token uint64) bool {
+func (a *channelActivation) removeHandler(id string, token uint64) (bool, int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	entry, ok := a.handlers[id]
 	if !ok || entry.token != token {
-		return false
+		return false, len(a.handlers)
 	}
 	delete(a.handlers, id)
-	return true
+	return true, len(a.handlers)
+}
+
+func (a *channelActivation) handlerCount() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return len(a.handlers)
 }
 
 type Handle struct {
@@ -148,6 +154,9 @@ func newWithDependencies(client *redis.Client, store ResourceStore, subscribe su
 	}
 }
 
+// Activate is retained as a low-level compatibility primitive. Normal v2
+// subscription control uses it only as the shared listener acquisition step;
+// readiness is established separately before an operator activation succeeds.
 func (r *Runtime) Activate(ctx context.Context, name string, onMessage func(string)) (*Handle, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -184,6 +193,30 @@ func (r *Runtime) Activate(ctx context.Context, name string, onMessage func(stri
 
 	go r.removeWhenStopped(name, activation)
 	return &Handle{runtime: r, channel: name, activation: activation, sub: activation.subscriber}, nil
+}
+
+// WaitReady waits for Redis to acknowledge the current Channel subscription.
+// Merely owning a reconnecting goroutine is not readiness and must not be
+// reported as successful operator activation.
+func (r *Runtime) WaitReady(ctx context.Context, name string) error {
+	name = strings.TrimSpace(name)
+	r.mu.Lock()
+	activation, ok := r.active[name]
+	r.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("channel %s is not active", name)
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-activation.subscriber.Ready():
+		return nil
+	case <-activation.subscriber.Stopped():
+		if err := activation.subscriber.LastError(); err != nil {
+			return fmt.Errorf("channel %s stopped before ready: %w", name, err)
+		}
+		return fmt.Errorf("channel %s stopped before ready", name)
+	}
 }
 
 func (r *Runtime) AttachSubscriber(ctx context.Context, id string) (*SubscriberHandle, error) {
@@ -272,6 +305,22 @@ func (r *Runtime) deactivateActivation(channel string, activation *channelActiva
 	return true
 }
 
+// deactivateIfIdle releases a listener that has no runtime handlers. Durable
+// Channel existence is independent of whether a live Redis SUBSCRIBE listener
+// is useful at this moment.
+func (r *Runtime) deactivateIfIdle(channel string, activation *channelActivation) bool {
+	r.mu.Lock()
+	current, ok := r.active[channel]
+	if !ok || current != activation || activation.handlerCount() != 0 {
+		r.mu.Unlock()
+		return false
+	}
+	delete(r.active, channel)
+	r.mu.Unlock()
+	activation.cancel()
+	return true
+}
+
 func (r *Runtime) detachSubscriber(channel string, activation *channelActivation, subscriberID string, token uint64) bool {
 	r.mu.Lock()
 	current, ok := r.active[channel]
@@ -279,8 +328,14 @@ func (r *Runtime) detachSubscriber(channel string, activation *channelActivation
 		r.mu.Unlock()
 		return false
 	}
-	removed := activation.removeHandler(subscriberID, token)
+	removed, remaining := activation.removeHandler(subscriberID, token)
+	if removed && remaining == 0 {
+		delete(r.active, channel)
+	}
 	r.mu.Unlock()
+	if removed && remaining == 0 {
+		activation.cancel()
+	}
 	return removed
 }
 
