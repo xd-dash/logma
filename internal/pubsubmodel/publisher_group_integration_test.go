@@ -2,7 +2,6 @@ package pubsubmodel
 
 import (
 	"context"
-	"errors"
 	"os"
 	"testing"
 
@@ -31,7 +30,7 @@ func TestRedisStorePublisherGroupRoundTrip(t *testing.T) {
 
 	channel := Channel{Name: "market"}
 	publisher := Publisher{ID: "stonks-live", Channel: "market", Type: "stonks"}
-	group := PublisherGroup{ID: "market-producers", PublisherIDs: []string{publisher.ID}}
+	group := PublisherGroup{ID: "market-producers", PublisherIDs: []string{publisher.ID, "news-later"}}
 
 	if err := store.PutChannel(ctx, channel); err != nil {
 		t.Fatal(err)
@@ -40,25 +39,26 @@ func TestRedisStorePublisherGroupRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.PutPublisherGroup(ctx, group); err != nil {
-		t.Fatal(err)
+		t.Fatalf("weak PublisherGroup should accept absent members: %v", err)
 	}
 
 	assertSet(t, ctx, client, keys.Publishers(), []string{publisher.ID})
 	assertSet(t, ctx, client, keys.PublisherGroups(), []string{group.ID})
-	assertSet(t, ctx, client, keys.PublisherGroupPublishers(group.ID), []string{publisher.ID})
-	assertSet(t, ctx, client, keys.PublisherGroupsForPublisher(publisher.ID), []string{group.ID})
+	assertSet(t, ctx, client, keys.PublisherGroupPublishers(group.ID), []string{publisher.ID, "news-later"})
+	assertSet(t, ctx, client, keys.PublisherGroupsForPublisher(publisher.ID), nil)
 
 	got, err := store.GetPublisherGroup(ctx, group.ID)
-	if err != nil || len(got.PublisherIDs) != 1 || got.PublisherIDs[0] != publisher.ID {
+	if err != nil || len(got.PublisherIDs) != 2 {
 		t.Fatalf("GetPublisherGroup=%#v %v", got, err)
 	}
-	if err := store.DeletePublisher(ctx, publisher.ID); !errors.Is(err, ErrReferenced) {
-		t.Fatalf("DeletePublisher while grouped=%v want ErrReferenced", err)
+	if err := store.DeletePublisher(ctx, publisher.ID); err != nil {
+		t.Fatalf("weak PublisherGroup blocked Publisher deletion: %v", err)
+	}
+	got, err = store.GetPublisherGroup(ctx, group.ID)
+	if err != nil || len(got.PublisherIDs) != 2 {
+		t.Fatalf("group declaration changed after member deletion: %#v %v", got, err)
 	}
 	if err := store.DeletePublisherGroup(ctx, group.ID); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.DeletePublisher(ctx, publisher.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.DeleteChannel(ctx, channel.Name); err != nil {
