@@ -15,96 +15,63 @@ import (
 const maxPubSubResourceBodyBytes = 1 << 20
 
 type pubSubResourceStore interface {
-	PutChannel(context.Context, pubsubmodel.Channel) error
-	GetChannel(context.Context, string) (pubsubmodel.Channel, error)
-	DeleteChannel(context.Context, string) error
-	ChannelIDs(context.Context) ([]string, error)
-
-	PutCallback(context.Context, pubsubmodel.Callback) error
-	GetCallback(context.Context, string) (pubsubmodel.Callback, error)
-	DeleteCallback(context.Context, string) error
-	CallbackIDs(context.Context) ([]string, error)
-
-	PutSubscriber(context.Context, pubsubmodel.Subscriber) error
-	GetSubscriber(context.Context, string) (pubsubmodel.Subscriber, error)
-	DeleteSubscriber(context.Context, string) error
-	SubscriberIDs(context.Context) ([]string, error)
-
-	PutPublisher(context.Context, pubsubmodel.Publisher) error
-	GetPublisher(context.Context, string) (pubsubmodel.Publisher, error)
-	DeletePublisher(context.Context, string) error
-	PublisherIDs(context.Context) ([]string, error)
-
-	PutSubscriptionGroup(context.Context, pubsubmodel.SubscriptionGroup) error
-	GetSubscriptionGroup(context.Context, string) (pubsubmodel.SubscriptionGroup, error)
-	DeleteSubscriptionGroup(context.Context, string) error
-	SubscriptionGroupIDs(context.Context) ([]string, error)
-
-	PutPublisherGroup(context.Context, pubsubmodel.PublisherGroup) error
-	GetPublisherGroup(context.Context, string) (pubsubmodel.PublisherGroup, error)
-	DeletePublisherGroup(context.Context, string) error
-	PublisherGroupIDs(context.Context) ([]string, error)
+	PutChannel(context.Context, pubsubmodel.Channel) error; GetChannel(context.Context,string)(pubsubmodel.Channel,error); DeleteChannel(context.Context,string) error; ChannelIDs(context.Context)([]string,error)
+	PutCallback(context.Context,pubsubmodel.Callback) error; GetCallback(context.Context,string)(pubsubmodel.Callback,error); DeleteCallback(context.Context,string) error; CallbackIDs(context.Context)([]string,error)
+	PutSubscriber(context.Context,pubsubmodel.Subscriber) error; GetSubscriber(context.Context,string)(pubsubmodel.Subscriber,error); DeleteSubscriber(context.Context,string) error; SubscriberIDs(context.Context)([]string,error)
+	PutPublisher(context.Context,pubsubmodel.Publisher) error; GetPublisher(context.Context,string)(pubsubmodel.Publisher,error); DeletePublisher(context.Context,string) error; PublisherIDs(context.Context)([]string,error)
+	PutSubscriptionGroup(context.Context,pubsubmodel.SubscriptionGroup) error; GetSubscriptionGroup(context.Context,string)(pubsubmodel.SubscriptionGroup,error); DeleteSubscriptionGroup(context.Context,string) error; SubscriptionGroupIDs(context.Context)([]string,error)
+	PutPublisherGroup(context.Context,pubsubmodel.PublisherGroup) error; GetPublisherGroup(context.Context,string)(pubsubmodel.PublisherGroup,error); DeletePublisherGroup(context.Context,string) error; PublisherGroupIDs(context.Context)([]string,error)
 }
 
-type pubSubResourceAPI struct { store func() (pubSubResourceStore, error) }
+// PublisherReconciler is supplied by runtime composition. The resource router
+// never manufactures transport authority from the graph-store credential.
+type PublisherReconciler interface { Reconcile(context.Context,string) error }
 
-func newPubSubResourceAPI() *pubSubResourceAPI {
-	store, err := newPubSubResourceRedisStore()
-	return &pubSubResourceAPI{store: func() (pubSubResourceStore, error) { return store, err }}
-}
-func NewPubSubResourceRouter() http.Handler { return newPubSubResourceRouter(newPubSubResourceAPI()) }
-func newPubSubResourceRouter(api *pubSubResourceAPI) http.Handler {
-	r := chi.NewRouter(); r.Use(middleware.Logger); r.Use(authenticateAPIKey); api.routes(r); return r
-}
+type pubSubResourceAPI struct { store func()(pubSubResourceStore,error); reconciler PublisherReconciler }
+func newPubSubResourceAPI()*pubSubResourceAPI{store,err:=newPubSubResourceRedisStore();return &pubSubResourceAPI{store:func()(pubSubResourceStore,error){return store,err}}}
+func NewPubSubResourceRouter() http.Handler{return newPubSubResourceRouter(newPubSubResourceAPI())}
+func NewPubSubResourceRouterWithPublisherReconciler(reconciler PublisherReconciler) http.Handler { api:=newPubSubResourceAPI();api.reconciler=reconciler;return newPubSubResourceRouter(api) }
+func newPubSubResourceRouter(api *pubSubResourceAPI)http.Handler{r:=chi.NewRouter();r.Use(middleware.Logger);r.Use(authenticateAPIKey);api.routes(r);return r}
 
-func (a *pubSubResourceAPI) routes(r chi.Router) {
-	r.Route("/pubsub", func(r chi.Router) {
-		r.Get("/channels", a.listChannels); r.Post("/channels", a.putChannel); r.Get("/channels/{name}", a.getChannel); r.Delete("/channels/{name}", a.deleteChannel)
-		r.Get("/callbacks", a.listCallbacks); r.Post("/callbacks", a.putCallback); r.Get("/callbacks/{id}", a.getCallback); r.Delete("/callbacks/{id}", a.deleteCallback)
-		r.Get("/subscribers", a.listSubscribers); r.Post("/subscribers", a.putSubscriber); r.Get("/subscribers/{id}", a.getSubscriber); r.Delete("/subscribers/{id}", a.deleteSubscriber)
-		r.Get("/publishers", a.listPublishers); r.Post("/publishers", a.putPublisher); r.Get("/publishers/{id}", a.getPublisher); r.Delete("/publishers/{id}", a.deletePublisher)
-		r.Get("/subscription-groups", a.listSubscriptionGroups); r.Post("/subscription-groups", a.putSubscriptionGroup); r.Get("/subscription-groups/{id}", a.getSubscriptionGroup); r.Delete("/subscription-groups/{id}", a.deleteSubscriptionGroup)
-		r.Get("/publisher-groups", a.listPublisherGroups); r.Post("/publisher-groups", a.putPublisherGroup); r.Get("/publisher-groups/{id}", a.getPublisherGroup); r.Delete("/publisher-groups/{id}", a.deletePublisherGroup)
-	})
-}
+func(a *pubSubResourceAPI)routes(r chi.Router){r.Route("/pubsub",func(r chi.Router){
+	r.Get("/channels",a.listChannels);r.Post("/channels",a.putChannel);r.Get("/channels/{name}",a.getChannel);r.Delete("/channels/{name}",a.deleteChannel)
+	r.Get("/callbacks",a.listCallbacks);r.Post("/callbacks",a.putCallback);r.Get("/callbacks/{id}",a.getCallback);r.Delete("/callbacks/{id}",a.deleteCallback)
+	r.Get("/subscribers",a.listSubscribers);r.Post("/subscribers",a.putSubscriber);r.Get("/subscribers/{id}",a.getSubscriber);r.Delete("/subscribers/{id}",a.deleteSubscriber)
+	r.Get("/publishers",a.listPublishers);r.Post("/publishers",a.putPublisher);r.Get("/publishers/{id}",a.getPublisher);r.Delete("/publishers/{id}",a.deletePublisher);r.Post("/publishers/{id}/reconcile",a.reconcilePublisher)
+	r.Get("/subscription-groups",a.listSubscriptionGroups);r.Post("/subscription-groups",a.putSubscriptionGroup);r.Get("/subscription-groups/{id}",a.getSubscriptionGroup);r.Delete("/subscription-groups/{id}",a.deleteSubscriptionGroup)
+	r.Get("/publisher-groups",a.listPublisherGroups);r.Post("/publisher-groups",a.putPublisherGroup);r.Get("/publisher-groups/{id}",a.getPublisherGroup);r.Delete("/publisher-groups/{id}",a.deletePublisherGroup)
+})}
 
-func (a *pubSubResourceAPI) putChannel(w http.ResponseWriter, r *http.Request) { var v pubsubmodel.Channel; a.put(w,r,&v,func(s pubSubResourceStore) error{return s.PutChannel(r.Context(),v)},func(s pubSubResourceStore)(any,error){return s.GetChannel(r.Context(),v.Name)}) }
-func (a *pubSubResourceAPI) getChannel(w http.ResponseWriter,r *http.Request){ s,ok:=a.resourceStore(w);if !ok{return};v,e:=s.GetChannel(r.Context(),chi.URLParam(r,"name"));writeGetResult(w,v,e) }
-func (a *pubSubResourceAPI) deleteChannel(w http.ResponseWriter,r *http.Request){ a.delete(w,r,func(s pubSubResourceStore)error{return s.DeleteChannel(r.Context(),chi.URLParam(r,"name"))},"failed to delete Channel") }
-func (a *pubSubResourceAPI) listChannels(w http.ResponseWriter,r *http.Request){ a.list(w,r,func(s pubSubResourceStore)([]string,error){return s.ChannelIDs(r.Context())}) }
+func(a *pubSubResourceAPI)putChannel(w http.ResponseWriter,r *http.Request){var v pubsubmodel.Channel;a.put(w,r,&v,func(s pubSubResourceStore)error{return s.PutChannel(r.Context(),v)},func(s pubSubResourceStore)(any,error){return s.GetChannel(r.Context(),v.Name)})}
+func(a *pubSubResourceAPI)getChannel(w http.ResponseWriter,r *http.Request){s,ok:=a.resourceStore(w);if!ok{return};v,e:=s.GetChannel(r.Context(),chi.URLParam(r,"name"));writeGetResult(w,v,e)}
+func(a *pubSubResourceAPI)deleteChannel(w http.ResponseWriter,r *http.Request){a.delete(w,r,func(s pubSubResourceStore)error{return s.DeleteChannel(r.Context(),chi.URLParam(r,"name"))},"failed to delete Channel")}
+func(a *pubSubResourceAPI)listChannels(w http.ResponseWriter,r *http.Request){a.list(w,r,func(s pubSubResourceStore)([]string,error){return s.ChannelIDs(r.Context())})}
+func(a *pubSubResourceAPI)putCallback(w http.ResponseWriter,r *http.Request){var v pubsubmodel.Callback;a.put(w,r,&v,func(s pubSubResourceStore)error{return s.PutCallback(r.Context(),v)},func(s pubSubResourceStore)(any,error){return s.GetCallback(r.Context(),v.ID)})}
+func(a *pubSubResourceAPI)getCallback(w http.ResponseWriter,r *http.Request){s,ok:=a.resourceStore(w);if!ok{return};v,e:=s.GetCallback(r.Context(),chi.URLParam(r,"id"));writeGetResult(w,v,e)}
+func(a *pubSubResourceAPI)deleteCallback(w http.ResponseWriter,r *http.Request){a.delete(w,r,func(s pubSubResourceStore)error{return s.DeleteCallback(r.Context(),chi.URLParam(r,"id"))},"failed to delete Callback")}
+func(a *pubSubResourceAPI)listCallbacks(w http.ResponseWriter,r *http.Request){a.list(w,r,func(s pubSubResourceStore)([]string,error){return s.CallbackIDs(r.Context())})}
+func(a *pubSubResourceAPI)putSubscriber(w http.ResponseWriter,r *http.Request){var v pubsubmodel.Subscriber;a.put(w,r,&v,func(s pubSubResourceStore)error{return s.PutSubscriber(r.Context(),v)},func(s pubSubResourceStore)(any,error){return s.GetSubscriber(r.Context(),v.ID)})}
+func(a *pubSubResourceAPI)getSubscriber(w http.ResponseWriter,r *http.Request){s,ok:=a.resourceStore(w);if!ok{return};v,e:=s.GetSubscriber(r.Context(),chi.URLParam(r,"id"));writeGetResult(w,v,e)}
+func(a *pubSubResourceAPI)deleteSubscriber(w http.ResponseWriter,r *http.Request){a.delete(w,r,func(s pubSubResourceStore)error{return s.DeleteSubscriber(r.Context(),chi.URLParam(r,"id"))},"failed to delete Subscriber")}
+func(a *pubSubResourceAPI)listSubscribers(w http.ResponseWriter,r *http.Request){a.list(w,r,func(s pubSubResourceStore)([]string,error){return s.SubscriberIDs(r.Context())})}
+func(a *pubSubResourceAPI)putPublisher(w http.ResponseWriter,r *http.Request){var v pubsubmodel.Publisher;a.put(w,r,&v,func(s pubSubResourceStore)error{return s.PutPublisher(r.Context(),v)},func(s pubSubResourceStore)(any,error){return s.GetPublisher(r.Context(),v.ID)})}
+func(a *pubSubResourceAPI)getPublisher(w http.ResponseWriter,r *http.Request){s,ok:=a.resourceStore(w);if!ok{return};v,e:=s.GetPublisher(r.Context(),chi.URLParam(r,"id"));writeGetResult(w,v,e)}
+func(a *pubSubResourceAPI)deletePublisher(w http.ResponseWriter,r *http.Request){a.delete(w,r,func(s pubSubResourceStore)error{return s.DeletePublisher(r.Context(),chi.URLParam(r,"id"))},"failed to delete Publisher")}
+func(a *pubSubResourceAPI)listPublishers(w http.ResponseWriter,r *http.Request){a.list(w,r,func(s pubSubResourceStore)([]string,error){return s.PublisherIDs(r.Context())})}
+func(a *pubSubResourceAPI)reconcilePublisher(w http.ResponseWriter,r *http.Request){if a.reconciler==nil{http.Error(w,"publisher reconciliation is not configured",http.StatusServiceUnavailable);return};if err:=a.reconciler.Reconcile(r.Context(),chi.URLParam(r,"id"));err!=nil{http.Error(w,err.Error(),http.StatusConflict);return};w.WriteHeader(http.StatusNoContent)}
+func(a *pubSubResourceAPI)putSubscriptionGroup(w http.ResponseWriter,r *http.Request){var v pubsubmodel.SubscriptionGroup;a.put(w,r,&v,func(s pubSubResourceStore)error{return s.PutSubscriptionGroup(r.Context(),v)},func(s pubSubResourceStore)(any,error){return s.GetSubscriptionGroup(r.Context(),v.ID)})}
+func(a *pubSubResourceAPI)getSubscriptionGroup(w http.ResponseWriter,r *http.Request){s,ok:=a.resourceStore(w);if!ok{return};v,e:=s.GetSubscriptionGroup(r.Context(),chi.URLParam(r,"id"));writeGetResult(w,v,e)}
+func(a *pubSubResourceAPI)deleteSubscriptionGroup(w http.ResponseWriter,r *http.Request){a.delete(w,r,func(s pubSubResourceStore)error{return s.DeleteSubscriptionGroup(r.Context(),chi.URLParam(r,"id"))},"failed to delete SubscriptionGroup")}
+func(a *pubSubResourceAPI)listSubscriptionGroups(w http.ResponseWriter,r *http.Request){a.list(w,r,func(s pubSubResourceStore)([]string,error){return s.SubscriptionGroupIDs(r.Context())})}
+func(a *pubSubResourceAPI)putPublisherGroup(w http.ResponseWriter,r *http.Request){var v pubsubmodel.PublisherGroup;a.put(w,r,&v,func(s pubSubResourceStore)error{return s.PutPublisherGroup(r.Context(),v)},func(s pubSubResourceStore)(any,error){return s.GetPublisherGroup(r.Context(),v.ID)})}
+func(a *pubSubResourceAPI)getPublisherGroup(w http.ResponseWriter,r *http.Request){s,ok:=a.resourceStore(w);if!ok{return};v,e:=s.GetPublisherGroup(r.Context(),chi.URLParam(r,"id"));writeGetResult(w,v,e)}
+func(a *pubSubResourceAPI)deletePublisherGroup(w http.ResponseWriter,r *http.Request){a.delete(w,r,func(s pubSubResourceStore)error{return s.DeletePublisherGroup(r.Context(),chi.URLParam(r,"id"))},"failed to delete PublisherGroup")}
+func(a *pubSubResourceAPI)listPublisherGroups(w http.ResponseWriter,r *http.Request){a.list(w,r,func(s pubSubResourceStore)([]string,error){return s.PublisherGroupIDs(r.Context())})}
 
-func (a *pubSubResourceAPI) putCallback(w http.ResponseWriter,r *http.Request){ var v pubsubmodel.Callback;a.put(w,r,&v,func(s pubSubResourceStore)error{return s.PutCallback(r.Context(),v)},func(s pubSubResourceStore)(any,error){return s.GetCallback(r.Context(),v.ID)}) }
-func (a *pubSubResourceAPI) getCallback(w http.ResponseWriter,r *http.Request){s,ok:=a.resourceStore(w);if !ok{return};v,e:=s.GetCallback(r.Context(),chi.URLParam(r,"id"));writeGetResult(w,v,e)}
-func (a *pubSubResourceAPI) deleteCallback(w http.ResponseWriter,r *http.Request){a.delete(w,r,func(s pubSubResourceStore)error{return s.DeleteCallback(r.Context(),chi.URLParam(r,"id"))},"failed to delete Callback")}
-func (a *pubSubResourceAPI) listCallbacks(w http.ResponseWriter,r *http.Request){a.list(w,r,func(s pubSubResourceStore)([]string,error){return s.CallbackIDs(r.Context())})}
-
-func (a *pubSubResourceAPI) putSubscriber(w http.ResponseWriter,r *http.Request){var v pubsubmodel.Subscriber;a.put(w,r,&v,func(s pubSubResourceStore)error{return s.PutSubscriber(r.Context(),v)},func(s pubSubResourceStore)(any,error){return s.GetSubscriber(r.Context(),v.ID)})}
-func (a *pubSubResourceAPI) getSubscriber(w http.ResponseWriter,r *http.Request){s,ok:=a.resourceStore(w);if !ok{return};v,e:=s.GetSubscriber(r.Context(),chi.URLParam(r,"id"));writeGetResult(w,v,e)}
-func (a *pubSubResourceAPI) deleteSubscriber(w http.ResponseWriter,r *http.Request){a.delete(w,r,func(s pubSubResourceStore)error{return s.DeleteSubscriber(r.Context(),chi.URLParam(r,"id"))},"failed to delete Subscriber")}
-func (a *pubSubResourceAPI) listSubscribers(w http.ResponseWriter,r *http.Request){a.list(w,r,func(s pubSubResourceStore)([]string,error){return s.SubscriberIDs(r.Context())})}
-
-func (a *pubSubResourceAPI) putPublisher(w http.ResponseWriter,r *http.Request){var v pubsubmodel.Publisher;a.put(w,r,&v,func(s pubSubResourceStore)error{return s.PutPublisher(r.Context(),v)},func(s pubSubResourceStore)(any,error){return s.GetPublisher(r.Context(),v.ID)})}
-func (a *pubSubResourceAPI) getPublisher(w http.ResponseWriter,r *http.Request){s,ok:=a.resourceStore(w);if !ok{return};v,e:=s.GetPublisher(r.Context(),chi.URLParam(r,"id"));writeGetResult(w,v,e)}
-func (a *pubSubResourceAPI) deletePublisher(w http.ResponseWriter,r *http.Request){a.delete(w,r,func(s pubSubResourceStore)error{return s.DeletePublisher(r.Context(),chi.URLParam(r,"id"))},"failed to delete Publisher")}
-func (a *pubSubResourceAPI) listPublishers(w http.ResponseWriter,r *http.Request){a.list(w,r,func(s pubSubResourceStore)([]string,error){return s.PublisherIDs(r.Context())})}
-
-func (a *pubSubResourceAPI) putSubscriptionGroup(w http.ResponseWriter,r *http.Request){var v pubsubmodel.SubscriptionGroup;a.put(w,r,&v,func(s pubSubResourceStore)error{return s.PutSubscriptionGroup(r.Context(),v)},func(s pubSubResourceStore)(any,error){return s.GetSubscriptionGroup(r.Context(),v.ID)})}
-func (a *pubSubResourceAPI) getSubscriptionGroup(w http.ResponseWriter,r *http.Request){s,ok:=a.resourceStore(w);if !ok{return};v,e:=s.GetSubscriptionGroup(r.Context(),chi.URLParam(r,"id"));writeGetResult(w,v,e)}
-func (a *pubSubResourceAPI) deleteSubscriptionGroup(w http.ResponseWriter,r *http.Request){a.delete(w,r,func(s pubSubResourceStore)error{return s.DeleteSubscriptionGroup(r.Context(),chi.URLParam(r,"id"))},"failed to delete SubscriptionGroup")}
-func (a *pubSubResourceAPI) listSubscriptionGroups(w http.ResponseWriter,r *http.Request){a.list(w,r,func(s pubSubResourceStore)([]string,error){return s.SubscriptionGroupIDs(r.Context())})}
-
-func (a *pubSubResourceAPI) putPublisherGroup(w http.ResponseWriter,r *http.Request){var v pubsubmodel.PublisherGroup;a.put(w,r,&v,func(s pubSubResourceStore)error{return s.PutPublisherGroup(r.Context(),v)},func(s pubSubResourceStore)(any,error){return s.GetPublisherGroup(r.Context(),v.ID)})}
-func (a *pubSubResourceAPI) getPublisherGroup(w http.ResponseWriter,r *http.Request){s,ok:=a.resourceStore(w);if !ok{return};v,e:=s.GetPublisherGroup(r.Context(),chi.URLParam(r,"id"));writeGetResult(w,v,e)}
-func (a *pubSubResourceAPI) deletePublisherGroup(w http.ResponseWriter,r *http.Request){a.delete(w,r,func(s pubSubResourceStore)error{return s.DeletePublisherGroup(r.Context(),chi.URLParam(r,"id"))},"failed to delete PublisherGroup")}
-func (a *pubSubResourceAPI) listPublisherGroups(w http.ResponseWriter,r *http.Request){a.list(w,r,func(s pubSubResourceStore)([]string,error){return s.PublisherGroupIDs(r.Context())})}
-
-func (a *pubSubResourceAPI) put(w http.ResponseWriter,r *http.Request,target interface{Validate() error},persist func(pubSubResourceStore)error,read func(pubSubResourceStore)(any,error)){
-	if !decodeResource(w,r,target){return};if err:=target.Validate();err!=nil{http.Error(w,err.Error(),http.StatusBadRequest);return};s,ok:=a.resourceStore(w);if !ok{return};if err:=persist(s);err!=nil{writeGraphMutationError(w,err,"failed to persist resource");return};stored,err:=read(s);if err!=nil{http.Error(w,"failed to read persisted resource",http.StatusInternalServerError);return};writeResource(w,http.StatusCreated,stored)
-}
-func (a *pubSubResourceAPI) delete(w http.ResponseWriter,r *http.Request,fn func(pubSubResourceStore)error,msg string){s,ok:=a.resourceStore(w);if !ok{return};if err:=fn(s);err!=nil{writeGraphMutationError(w,err,msg);return};w.WriteHeader(http.StatusNoContent)}
-func (a *pubSubResourceAPI) list(w http.ResponseWriter,r *http.Request,fn func(pubSubResourceStore)([]string,error)){s,ok:=a.resourceStore(w);if !ok{return};ids,err:=fn(s);if err!=nil{http.Error(w,"failed to list resources",http.StatusInternalServerError);return};writeResource(w,http.StatusOK,ids)}
-func (a *pubSubResourceAPI) resourceStore(w http.ResponseWriter)(pubSubResourceStore,bool){store,err:=a.store();if err!=nil{http.Error(w,err.Error(),http.StatusServiceUnavailable);return nil,false};return store,true}
-
+func(a *pubSubResourceAPI)put(w http.ResponseWriter,r *http.Request,target interface{Validate()error},persist func(pubSubResourceStore)error,read func(pubSubResourceStore)(any,error)){if!decodeResource(w,r,target){return};if err:=target.Validate();err!=nil{http.Error(w,err.Error(),http.StatusBadRequest);return};s,ok:=a.resourceStore(w);if!ok{return};if err:=persist(s);err!=nil{writeGraphMutationError(w,err,"failed to persist resource");return};stored,err:=read(s);if err!=nil{http.Error(w,"failed to read persisted resource",http.StatusInternalServerError);return};writeResource(w,http.StatusCreated,stored)}
+func(a *pubSubResourceAPI)delete(w http.ResponseWriter,r *http.Request,fn func(pubSubResourceStore)error,msg string){s,ok:=a.resourceStore(w);if!ok{return};if err:=fn(s);err!=nil{writeGraphMutationError(w,err,msg);return};w.WriteHeader(http.StatusNoContent)}
+func(a *pubSubResourceAPI)list(w http.ResponseWriter,r *http.Request,fn func(pubSubResourceStore)([]string,error)){s,ok:=a.resourceStore(w);if!ok{return};ids,err:=fn(s);if err!=nil{http.Error(w,"failed to list resources",http.StatusInternalServerError);return};writeResource(w,http.StatusOK,ids)}
+func(a *pubSubResourceAPI)resourceStore(w http.ResponseWriter)(pubSubResourceStore,bool){store,err:=a.store();if err!=nil{http.Error(w,err.Error(),http.StatusServiceUnavailable);return nil,false};return store,true}
 func decodeResource(w http.ResponseWriter,r *http.Request,target any)bool{r.Body=http.MaxBytesReader(w,r.Body,maxPubSubResourceBodyBytes);d:=json.NewDecoder(r.Body);d.DisallowUnknownFields();if err:=d.Decode(target);err!=nil{http.Error(w,"invalid JSON resource",http.StatusBadRequest);return false};var extra any;if err:=d.Decode(&extra);err!=io.EOF{http.Error(w,"invalid JSON resource",http.StatusBadRequest);return false};return true}
 func writeGraphMutationError(w http.ResponseWriter,err error,msg string){if errors.Is(err,pubsubmodel.ErrMissingReference)||errors.Is(err,pubsubmodel.ErrReferenced){http.Error(w,err.Error(),http.StatusConflict);return};http.Error(w,msg,http.StatusInternalServerError)}
 func writeGetResult[T any](w http.ResponseWriter,resource T,err error){if err!=nil{if errors.Is(err,pubsubmodel.ErrNotFound){http.Error(w,"resource not found",http.StatusNotFound);return};http.Error(w,"failed to read resource",http.StatusInternalServerError);return};writeResource(w,http.StatusOK,resource)}
