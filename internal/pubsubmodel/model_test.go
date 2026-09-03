@@ -122,6 +122,28 @@ func TestCallbackConfigurationMatchesType(t *testing.T) {
 	}
 }
 
+func TestSubscriptionGroupAllowsEmptyMembership(t *testing.T) {
+	group := SubscriptionGroup{ID: "group-1"}
+	if err := group.Validate(); err != nil {
+		t.Fatalf("empty subscription group should be valid: %v", err)
+	}
+
+	group.SubscriberIDs = []string{"subscriber-1", "subscriber-2"}
+	if err := group.Validate(); err != nil {
+		t.Fatalf("subscription group with members should be valid: %v", err)
+	}
+}
+
+func TestSubscriptionGroupRejectsEmptySubscriberIdentity(t *testing.T) {
+	group := SubscriptionGroup{
+		ID:            "group-1",
+		SubscriberIDs: []string{"subscriber-1", " "},
+	}
+	if err := group.Validate(); err == nil {
+		t.Fatal("subscription group with empty subscriber identity should be invalid")
+	}
+}
+
 func TestPublisherAndServerlessEndpointAreIndependentResources(t *testing.T) {
 	publisher := Publisher{
 		ID:      "news",
