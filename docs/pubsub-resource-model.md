@@ -136,23 +136,38 @@ Redis ACL enforces scope plus command/channel families. `RedisStore` enforces gr
 
 Durable Channel existence and live listener existence are separate.
 
-Normal runtime lifecycle is:
+Normal first-activation lifecycle is:
 
 ```text
 first active Subscription on Channel
     -> create shared Redis listener
+    -> install Subscription handler
     -> wait for Redis SUBSCRIBE acknowledgement
 
 more active Subscriptions
-    -> attach handlers
+    -> attach handlers to the shared listener
 
 last active Subscription shuts down
-    -> release the Redis listener
+    -> cancel its handler/delivery context
+    -> release the Redis listener when no handlers remain
 ```
 
-`ActivateSubscription(id)` means reconcile the current Subscriber/Callback declaration and return success only after initial Redis readiness. A reconnecting goroutine that has never subscribed is not successful activation.
+Installing the first handler before the initial acknowledgement removes an ACK-before-handler window. A Subscriber handle owns its own cancellation context beneath the shared Channel listener, so shutdown cancels queued/in-flight work for that Subscription and a stale dispatch snapshot cannot enqueue new work after detach.
 
-Repeated activation installs a replacement handler before retiring the previous one. Stale handles cannot detach newer generations.
+`ActivateSubscription(id)` is ensure-current, not merely ensure-present. Reconciliation behaves differently from first activation because an existing handler is already known-good:
+
+```text
+load replacement declaration
+-> acquire/locate target Channel listener
+-> wait for the target listener's observed current readiness
+-> install replacement handler
+-> publish replacement handle
+-> retire old handler
+```
+
+If readiness or lookup fails, the old handler remains installed. Same-identity operations serialize; different Subscription identities do not share a controller-wide operation lock.
+
+Redis readiness is generation-aware: after the subscription loop observes a lost connection and enters reconnect, a fresh readiness signal is required. This is an observed readiness boundary, not a guarantee that the network cannot fail immediately after an operation returns. Logma remains best-effort Pub/Sub signaling.
 
 Request context bounds lookup/readiness for one command. Controller/service context owns the successfully established runtime after the request returns.
 
@@ -169,7 +184,7 @@ Redis receive
     -> webhook requests
 ```
 
-Queue saturation drops/logs instead of blocking the receive loop or growing memory without bound. This remains weak/ephemeral signaling semantics; NQC owns repair/anti-entropy when correctness requires more than best-effort Pub/Sub delivery.
+Queue saturation drops/logs instead of blocking the receive loop or growing memory without bound. Delivery contexts are scoped to individual active Subscriptions, not merely the shared Channel listener. This remains weak/ephemeral signaling semantics; NQC owns repair/anti-entropy when correctness requires more than best-effort Pub/Sub delivery.
 
 ## Publisher runtime
 
@@ -235,8 +250,12 @@ Fatline     capability/profile/runtime composition
 Huram       exact-source qualification and deployment evidence
 ```
 
-The next composition boundary is one explicit Fatline-owned `LogmaService` (or equivalent) that owns graph and transport Redis clients separately, constructs the Subscription runtime/controller and Publisher registry/reconciler, exposes operator and advanced routers, and closes all owned runtime workers/listeners cleanly.
+The remaining composition boundary is one explicit Fatline-owned `LogmaService` (or equivalent) that owns graph and transport Redis clients separately, constructs the Subscription runtime/controller and Publisher registry/reconciler, exposes operator and advanced routers, and closes all owned runtime workers/listeners cleanly. Until that root exists, the current `cmd/api` constructors are a development composition and group runtime operations are intentionally not production-ready.
+
+The remaining ordinary-surface symmetry is task-shaped unsubscribe. It should stop the locally owned active Subscription and delete its durable Subscriber plus convenience-owned Callback without deleting a shared Channel or an independently managed/shared Callback.
 
 ## Design pressure rule
 
 When an abstraction repeatedly requires new lifecycle/concurrency guards, first ask whether the abstraction should exist. This review removed standalone empty Channel runtime semantics from ordinary control and removed speculative `ServerlessEndpoint` resource semantics rather than continuing to harden them.
+
+Only machinery that preserves an observable contract earns complexity budget. Cheap correctness checks remain; speculative repair, distributed ownership, new resource nouns, and provider vocabulary stay out until a real consumer requires them.
