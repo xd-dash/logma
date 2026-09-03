@@ -10,7 +10,8 @@ import (
 )
 
 // RedisKeys materializes the scope-first Fatline key grammar for Logma Pub/Sub
-// resources. Resource attributes live in hashes; graph edges live in sets.
+// resources. Resource attributes live in hashes; graph edges and discovery
+// indexes live in sets.
 type RedisKeys struct {
 	scope string
 }
@@ -25,6 +26,22 @@ func NewRedisKeys(scope string) (RedisKeys, error) {
 
 func (k RedisKeys) resource(kind, id string) string {
 	return fmt.Sprintf("%s:logma:pubsub:%s:%s", k.scope, kind, id)
+}
+
+func (k RedisKeys) registry(kind string) string {
+	return fmt.Sprintf("%s:logma:pubsub:%s", k.scope, kind)
+}
+
+func (k RedisKeys) Channels() string {
+	return k.registry("channels")
+}
+
+func (k RedisKeys) Callbacks() string {
+	return k.registry("callbacks")
+}
+
+func (k RedisKeys) Subscribers() string {
+	return k.registry("subscribers")
 }
 
 func (k RedisKeys) Channel(name string) string {
@@ -95,9 +112,14 @@ func (s *RedisStore) PutChannel(ctx context.Context, channel Channel) error {
 		return err
 	}
 	name := strings.TrimSpace(channel.Name)
-	return s.client.HSet(ctx, s.keys.Channel(name), map[string]any{
-		"name": name,
-	}).Err()
+	_, err := s.client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+		pipe.HSet(ctx, s.keys.Channel(name), map[string]any{
+			"name": name,
+		})
+		pipe.SAdd(ctx, s.keys.Channels(), name)
+		return nil
+	})
+	return err
 }
 
 func (s *RedisStore) PutCallback(ctx context.Context, callback Callback) error {
@@ -129,6 +151,7 @@ func (s *RedisStore) PutCallback(ctx context.Context, callback Callback) error {
 		}
 
 		pipe.HSet(ctx, resourceKey, fields)
+		pipe.SAdd(ctx, s.keys.Callbacks(), id)
 		return nil
 	})
 	return err
@@ -188,6 +211,7 @@ func (s *RedisStore) PutSubscriber(ctx context.Context, subscriber Subscriber) e
 			})
 			pipe.Del(ctx, callbacksKey)
 			pipe.SAdd(ctx, callbacksKey, stringsToAny(callbacks)...)
+			pipe.SAdd(ctx, s.keys.Subscribers(), id)
 
 			if oldChannel != "" && oldChannel != channel {
 				pipe.SRem(ctx, s.keys.ChannelSubscribers(oldChannel), id)
@@ -286,7 +310,7 @@ func (s *RedisStore) PutSubscriptionGroup(ctx context.Context, group Subscriptio
 			}
 		}
 
-		_, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 			pipe.HSet(ctx, groupKey, map[string]any{"id": id})
 			pipe.Del(ctx, membersKey)
 			if len(subscribers) > 0 {
