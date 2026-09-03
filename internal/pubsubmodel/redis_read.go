@@ -132,15 +132,35 @@ func (s *RedisStore) GetSubscriptionGroup(ctx context.Context, id string) (Subsc
 }
 
 func (s *RedisStore) ChannelSubscriberIDs(ctx context.Context, channel string) ([]string, error) {
-	return s.sortedMembers(ctx, s.keys.ChannelSubscribers(strings.TrimSpace(channel)))
+	channel = normalizeIdentity(channel)
+	if channel == "" {
+		return nil, errors.New("channel name is required")
+	}
+	return s.sortedMembers(ctx, s.keys.ChannelSubscribers(channel))
 }
 
 func (s *RedisStore) ChannelPublisherIDs(ctx context.Context, channel string) ([]string, error) {
-	return s.sortedMembers(ctx, s.keys.ChannelPublishers(strings.TrimSpace(channel)))
+	channel = normalizeIdentity(channel)
+	if channel == "" {
+		return nil, errors.New("channel name is required")
+	}
+	return s.sortedMembers(ctx, s.keys.ChannelPublishers(channel))
 }
 
 func (s *RedisStore) CallbackSubscriberIDs(ctx context.Context, callbackID string) ([]string, error) {
-	return s.sortedMembers(ctx, s.keys.CallbackSubscribers(strings.TrimSpace(callbackID)))
+	callbackID = normalizeIdentity(callbackID)
+	if callbackID == "" {
+		return nil, errors.New("callback id is required")
+	}
+	return s.sortedMembers(ctx, s.keys.CallbackSubscribers(callbackID))
+}
+
+func (s *RedisStore) SubscriberGroupIDs(ctx context.Context, subscriberID string) ([]string, error) {
+	subscriberID = normalizeIdentity(subscriberID)
+	if subscriberID == "" {
+		return nil, errors.New("subscriber id is required")
+	}
+	return s.sortedMembers(ctx, s.keys.SubscriberGroups(subscriberID))
 }
 
 func (s *RedisStore) sortedMembers(ctx context.Context, key string) ([]string, error) {
