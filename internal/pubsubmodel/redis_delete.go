@@ -23,7 +23,7 @@ func (s *RedisStore) DeleteSubscriber(ctx context.Context, id string) error {
 	callbacksKey := s.keys.SubscriberCallbacks(id)
 	groupsKey := s.keys.SubscriberGroups(id)
 
-	return s.client.Watch(ctx, func(tx *redis.Tx) error {
+	return s.watch(ctx, func(tx *redis.Tx) error {
 		groups, err := tx.SCard(ctx, groupsKey).Result()
 		if err != nil {
 			return err
@@ -76,7 +76,7 @@ func (s *RedisStore) DeletePublisher(ctx context.Context, id string) error {
 	}
 
 	publisherKey := s.keys.Publisher(id)
-	return s.client.Watch(ctx, func(tx *redis.Tx) error {
+	return s.watch(ctx, func(tx *redis.Tx) error {
 		channel, err := tx.HGet(ctx, publisherKey, "channel").Result()
 		if err == redis.Nil {
 			return nil
@@ -109,7 +109,7 @@ func (s *RedisStore) DeleteCallback(ctx context.Context, id string) error {
 	subscribersKey := s.keys.CallbackSubscribers(id)
 	urlsKey := s.keys.CallbackURLs(id)
 
-	return s.client.Watch(ctx, func(tx *redis.Tx) error {
+	return s.watch(ctx, func(tx *redis.Tx) error {
 		references, err := tx.SCard(ctx, subscribersKey).Result()
 		if err != nil {
 			return err
@@ -139,7 +139,7 @@ func (s *RedisStore) DeleteChannel(ctx context.Context, name string) error {
 	subscribersKey := s.keys.ChannelSubscribers(name)
 	publishersKey := s.keys.ChannelPublishers(name)
 
-	return s.client.Watch(ctx, func(tx *redis.Tx) error {
+	return s.watch(ctx, func(tx *redis.Tx) error {
 		subscribers, err := tx.SCard(ctx, subscribersKey).Result()
 		if err != nil {
 			return err
@@ -170,7 +170,7 @@ func (s *RedisStore) DeleteSubscriptionGroup(ctx context.Context, id string) err
 	}
 	groupKey := s.keys.SubscriptionGroup(id)
 	membersKey := s.keys.SubscriptionGroupSubscribers(id)
-	return s.client.Watch(ctx, func(tx *redis.Tx) error {
+	return s.watch(ctx, func(tx *redis.Tx) error {
 		members, err := tx.SMembers(ctx, membersKey).Result()
 		if err != nil {
 			return err
