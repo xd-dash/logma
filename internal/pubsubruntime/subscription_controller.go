@@ -43,10 +43,11 @@ func NewSubscriptionController(runtime *Runtime) (*SubscriptionController, error
 }
 
 // ActivateSubscription is ensure-current rather than merely ensure-present.
-// Repeated activation re-reads the Subscriber and Callback declarations and
-// installs the new handler before detaching the old one. It returns success only
-// after Redis has acknowledged the shared Channel subscription. Failed
-// reconciliation therefore leaves the previous known-good handler intact.
+// Repeated activation re-reads the Subscriber and Callback declarations. The
+// previous known-good handler remains installed until the replacement listener
+// is currently ready; first activation installs its handler before waiting for
+// the initial ACK so there is no ACK-before-handler window. Same-identity
+// operations serialize, while different identities remain independent.
 func (c *SubscriptionController) ActivateSubscription(ctx context.Context, id string) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -74,12 +75,12 @@ func (c *SubscriptionController) ActivateSubscription(ctx context.Context, id st
 		}
 		pending := &subscriptionOperation{done: make(chan struct{})}
 		c.pending[id] = pending
+		oldHandle := c.active[id]
 		c.mu.Unlock()
 
-		newHandle, err := c.activate(ctx, id)
+		newHandle, err := c.activate(ctx, id, oldHandle != nil)
 
 		c.mu.Lock()
-		oldHandle := c.active[id]
 		if err == nil && c.closed {
 			err = errors.New("subscription controller is closed")
 		}
@@ -104,7 +105,7 @@ func (c *SubscriptionController) ActivateSubscription(ctx context.Context, id st
 	}
 }
 
-func (c *SubscriptionController) activate(ctx context.Context, id string) (*SubscriberHandle, error) {
+func (c *SubscriptionController) activate(ctx context.Context, id string, preserveExisting bool) (*SubscriberHandle, error) {
 	subscriber, err := c.runtime.store.GetSubscriber(ctx, id)
 	if err != nil {
 		return nil, err
@@ -124,10 +125,22 @@ func (c *SubscriptionController) activate(ctx context.Context, id string) (*Subs
 		}
 	}
 
-	// Install the handler before waiting for the initial Redis acknowledgement.
-	// Once SUBSCRIBE is acknowledged, Redis may deliver immediately; attaching
-	// first avoids a post-ACK/pre-handler window in which an operator-visible
-	// activation could lose its first message.
+	if preserveExisting {
+		// A reconciliation already has a known-good handler. Keep it installed
+		// until the target listener is currently ready; a timeout or reconnecting
+		// Redis connection therefore cannot erase the old working definition.
+		if err := c.runtime.WaitReady(ctx, subscriber.Channel); err != nil {
+			if channelHandle != nil {
+				c.runtime.deactivateIfIdle(subscriber.Channel, channelHandle.activation)
+			}
+			return nil, err
+		}
+		return c.runtime.AttachSubscriber(ctx, id)
+	}
+
+	// First activation has no known-good handler to preserve. Install before
+	// waiting for the initial Redis acknowledgement because Redis may deliver as
+	// soon as SUBSCRIBE is acknowledged.
 	newHandle, err := c.runtime.AttachSubscriber(ctx, id)
 	if err != nil {
 		if channelHandle != nil {
