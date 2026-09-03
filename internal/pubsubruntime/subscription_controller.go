@@ -65,7 +65,13 @@ func (c *SubscriptionController) ActivateSubscription(ctx context.Context, id st
 			case <-ctx.Done():
 				return ctx.Err()
 			case <-done:
-				return pending.err
+				if pending.err != nil {
+					return pending.err
+				}
+				// This caller requested its own reconciliation. Once the earlier
+				// same-ID operation completes successfully, loop and re-read the
+				// current declaration rather than inheriting an older snapshot.
+				continue
 			}
 		}
 		pending := &subscriptionOperation{done: make(chan struct{})}
