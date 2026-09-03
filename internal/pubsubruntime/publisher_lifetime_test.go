@@ -17,11 +17,12 @@ func (p *contextCapturingPublisherProvider) EnsureActive(ctx context.Context, _ 
 }
 
 func TestPublisherReconcilerRuntimeSurvivesRequestCancellation(t *testing.T) {
-	store := fakePublisherStore{
+	store := publisherTestStore{
 		publisher: pubsubmodel.Publisher{ID: "stonks", Channel: "market", Type: "capture"},
 		channel:   pubsubmodel.Channel{Name: "market"},
 	}
-	channels := &fakeChannelActivator{active: true}
+	events := []string{}
+	channels := &publisherTestActivator{active: true, events: &events}
 	providers := NewPublisherRegistry()
 	provider := &contextCapturingPublisherProvider{}
 	if err := providers.Register("capture", provider); err != nil {
