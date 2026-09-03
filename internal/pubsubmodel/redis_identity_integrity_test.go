@@ -40,6 +40,13 @@ func TestRedisStoreRejectsMismatchedStoredIdentity(t *testing.T) {
 		t.Fatalf("GetChannel mismatched stored identity = %v", err)
 	}
 
+	if err := client.HSet(ctx, keys.Channel("canonical"), "name", " canonical ").Err(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetChannel(ctx, "canonical"); err == nil || !strings.Contains(err.Error(), "does not match requested identity") {
+		t.Fatalf("GetChannel noncanonical stored identity = %v", err)
+	}
+
 	if err := client.HSet(ctx, keys.Subscriber("expected-sub"), map[string]any{
 		"id":      "different-sub",
 		"channel": "expected",
