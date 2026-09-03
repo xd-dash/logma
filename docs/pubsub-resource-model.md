@@ -49,7 +49,7 @@ An empty active Channel is therefore valid. This deliberately diverges from expo
 
 Callbacks are resources rather than fields embedded in a subscription. A Subscriber may reference one or many callbacks, and the same callback may be reused by multiple Subscribers when policy permits.
 
-A webhook Callback preserves Logma's historical fanout behavior: one webhook resource may contain either the single-target `callbackURL` compatibility form, the multi-target `callbackURLs` form, or both. Dispatch targets are the normalized non-empty union in declaration order.
+A webhook Callback preserves Logma's historical fanout behavior: one webhook resource may contain either the single-target `callbackURL` compatibility form, the multi-target `callbackURLs` form, or both. Dispatch targets are the normalized non-empty union in declaration order. Each target must be a syntactically valid absolute `http` or `https` URL; target reachability and network policy remain runtime concerns.
 
 Single-target example:
 
@@ -118,37 +118,44 @@ Redis HASH + SET graph
 
 New persisted resource keys follow the Fatline scope-first grammar rather than extending the historical `active_subscriptions:*` encoding.
 
+Resource identities remain raw logical values in HASH fields and SET membership. Only identity segments interpolated into Redis key names are escaped: `%` becomes `%25` and `:` becomes `%3A`. This prevents legal colon-rich identities such as `global:events` or suffix-looking identities such as `foo:subscribers` from aliasing graph-index keys. The security scope and fixed grammar segments are not decoded from resource identities.
+
 ### Channel
 
 ```text
-HASH <scope>:logma:pubsub:channel:<channel>
-SET  <scope>:logma:pubsub:channel:<channel>:subscribers
-SET  <scope>:logma:pubsub:channel:<channel>:publishers
+HASH <scope>:logma:pubsub:channel:<escaped-channel>
+SET  <scope>:logma:pubsub:channel:<escaped-channel>:subscribers
+SET  <scope>:logma:pubsub:channel:<escaped-channel>:publishers
+SET  <scope>:logma:pubsub:channels
 ```
+
+The `channels` SET contains raw Channel identities and is the scan-free discovery index.
 
 ### Callback
 
 ```text
-HASH <scope>:logma:pubsub:callback:<callback-id>
-SET  <scope>:logma:pubsub:callback:<callback-id>:subscribers
-SET  <scope>:logma:pubsub:callback:<callback-id>:urls   # webhook only
+HASH <scope>:logma:pubsub:callback:<escaped-callback-id>
+SET  <scope>:logma:pubsub:callback:<escaped-callback-id>:subscribers
+SET  <scope>:logma:pubsub:callback:<escaped-callback-id>:urls   # webhook only
+SET  <scope>:logma:pubsub:callbacks
 ```
 
-Webhook URL membership is a SET because fanout order is not part of delivery correctness. The typed HTTP model may preserve declaration order at its boundary, but durable Redis storage treats destinations as unordered identities and removes duplicates.
+Webhook URL membership is a SET because fanout order is not part of delivery correctness. The typed HTTP model may preserve declaration order at its boundary, but durable Redis storage treats destinations as unordered identities and removes duplicates. The `callbacks` SET contains raw Callback identities for scan-free discovery.
 
 ### Subscriber
 
 ```text
-HASH <scope>:logma:pubsub:subscriber:<subscriber-id>
-SET  <scope>:logma:pubsub:subscriber:<subscriber-id>:callbacks
+HASH <scope>:logma:pubsub:subscriber:<escaped-subscriber-id>
+SET  <scope>:logma:pubsub:subscriber:<escaped-subscriber-id>:callbacks
+SET  <scope>:logma:pubsub:subscribers
 ```
 
-The Subscriber HASH stores its Channel reference. The Channel reverse `:subscribers` SET and each Callback reverse `:subscribers` SET are maintained with the forward callback membership so graph traversal does not require `SCAN + GET + decode`.
+The Subscriber HASH stores its Channel reference. The Channel reverse `:subscribers` SET and each Callback reverse `:subscribers` SET are maintained with the forward callback membership so graph traversal does not require `SCAN + GET + decode`. The `subscribers` SET contains raw Subscriber identities for scan-free discovery.
 
 ### Publisher
 
 ```text
-HASH <scope>:logma:pubsub:publisher:<publisher-id>
+HASH <scope>:logma:pubsub:publisher:<escaped-publisher-id>
 ```
 
 The Publisher HASH stores its Channel reference. The Channel reverse `:publishers` SET is maintained transactionally with it.
@@ -156,8 +163,8 @@ The Publisher HASH stores its Channel reference. The Channel reverse `:publisher
 ### SubscriptionGroup
 
 ```text
-HASH <scope>:logma:pubsub:group:<group-id>
-SET  <scope>:logma:pubsub:group:<group-id>:subscribers
+HASH <scope>:logma:pubsub:group:<escaped-group-id>
+SET  <scope>:logma:pubsub:group:<escaped-group-id>:subscribers
 ```
 
 An empty group is valid. Membership points at Subscriber resources rather than flattening channel/callback configuration into the group.
@@ -168,16 +175,29 @@ An empty group is valid. Membership points at Subscriber resources rather than f
 
 Subscriber and Publisher writes use optimistic Redis transactions so their forward references and reverse indexes change together. Referenced Channel, Callback, or Subscriber resources must already exist before relationship-bearing resources are stored.
 
-The storage layer deliberately does not use key scans as its relational mechanism. Reverse indexes are first-class graph edges:
+Missing graph dependencies and attempts to delete still-referenced resources are typed graph-policy conflicts. The HTTP resource surface maps those conflicts to `409`; Redis/network/storage failures remain server errors rather than being mislabeled as graph conflicts. Resource POST responses are reconstructed from persisted state so trimming, deduplication, and unordered Redis SET semantics are reflected canonically at the boundary. JSON resource requests are bounded, reject unknown fields, and accept exactly one JSON value.
+
+The storage layer deliberately does not use key scans as its relational mechanism. Reverse indexes and resource-kind registries are first-class graph indexes:
 
 ```text
 channel -> subscribers
 channel -> publishers
 callback -> subscribers
 subscriber -> callbacks
+channels registry -> Channel identities
+callbacks registry -> Callback identities
+subscribers registry -> Subscriber identities
 ```
 
 A later Redis Function layer may move these mutations behind narrowly scoped `FCALL` operations when we want invariant enforcement entirely server-side. The HASH/SET representation is compatible with that direction and does not require changing the public resource model.
+
+## Runtime attachment semantics
+
+One active Redis listener is owned per persisted Channel. Subscriber handlers are multiplexed onto that listener. Runtime handles are generation-specific: a stale Channel or Subscriber handle cannot deactivate or detach a later replacement with the same identity. Deactivating a Channel cancels the activation context used for in-flight webhook delivery. Durable Subscriber and Callback resources remain intact when a runtime attachment is detached.
+
+Runtime registry descriptors and record enumeration are deterministic even though their underlying sources include Go maps and Redis SETs. This makes stored snapshots and control-plane responses stable without assigning semantic delivery order to Redis SET membership.
+
+Callback/Subscriber resource changes are still explicit runtime operations: an already attached Subscriber uses the callback snapshot resolved at attachment time and is not silently hot-reloaded from Redis.
 
 ## Compatibility and migration
 
