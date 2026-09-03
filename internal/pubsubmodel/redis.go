@@ -38,61 +38,21 @@ func (k RedisKeys) registry(kind string) string {
 	return fmt.Sprintf("%s:logma:pubsub:%s", k.scope, kind)
 }
 
-func (k RedisKeys) Channels() string {
-	return k.registry("channels")
-}
+func (k RedisKeys) Channels() string { return k.registry("channels") }
+func (k RedisKeys) Callbacks() string { return k.registry("callbacks") }
+func (k RedisKeys) Subscribers() string { return k.registry("subscribers") }
 
-func (k RedisKeys) Callbacks() string {
-	return k.registry("callbacks")
-}
-
-func (k RedisKeys) Subscribers() string {
-	return k.registry("subscribers")
-}
-
-func (k RedisKeys) Channel(name string) string {
-	return k.resource("channel", strings.TrimSpace(name))
-}
-
-func (k RedisKeys) ChannelSubscribers(name string) string {
-	return k.Channel(name) + ":subscribers"
-}
-
-func (k RedisKeys) ChannelPublishers(name string) string {
-	return k.Channel(name) + ":publishers"
-}
-
-func (k RedisKeys) Callback(id string) string {
-	return k.resource("callback", strings.TrimSpace(id))
-}
-
-func (k RedisKeys) CallbackSubscribers(id string) string {
-	return k.Callback(id) + ":subscribers"
-}
-
-func (k RedisKeys) CallbackURLs(id string) string {
-	return k.Callback(id) + ":urls"
-}
-
-func (k RedisKeys) Subscriber(id string) string {
-	return k.resource("subscriber", strings.TrimSpace(id))
-}
-
-func (k RedisKeys) SubscriberCallbacks(id string) string {
-	return k.Subscriber(id) + ":callbacks"
-}
-
-func (k RedisKeys) Publisher(id string) string {
-	return k.resource("publisher", strings.TrimSpace(id))
-}
-
-func (k RedisKeys) SubscriptionGroup(id string) string {
-	return k.resource("group", strings.TrimSpace(id))
-}
-
-func (k RedisKeys) SubscriptionGroupSubscribers(id string) string {
-	return k.SubscriptionGroup(id) + ":subscribers"
-}
+func (k RedisKeys) Channel(name string) string { return k.resource("channel", strings.TrimSpace(name)) }
+func (k RedisKeys) ChannelSubscribers(name string) string { return k.Channel(name) + ":subscribers" }
+func (k RedisKeys) ChannelPublishers(name string) string { return k.Channel(name) + ":publishers" }
+func (k RedisKeys) Callback(id string) string { return k.resource("callback", strings.TrimSpace(id)) }
+func (k RedisKeys) CallbackSubscribers(id string) string { return k.Callback(id) + ":subscribers" }
+func (k RedisKeys) CallbackURLs(id string) string { return k.Callback(id) + ":urls" }
+func (k RedisKeys) Subscriber(id string) string { return k.resource("subscriber", strings.TrimSpace(id)) }
+func (k RedisKeys) SubscriberCallbacks(id string) string { return k.Subscriber(id) + ":callbacks" }
+func (k RedisKeys) Publisher(id string) string { return k.resource("publisher", strings.TrimSpace(id)) }
+func (k RedisKeys) SubscriptionGroup(id string) string { return k.resource("group", strings.TrimSpace(id)) }
+func (k RedisKeys) SubscriptionGroupSubscribers(id string) string { return k.SubscriptionGroup(id) + ":subscribers" }
 
 // RedisStore persists the Logma Pub/Sub control-plane graph without JSON
 // documents. HTTP serialization is intentionally independent of this storage
@@ -119,9 +79,7 @@ func (s *RedisStore) PutChannel(ctx context.Context, channel Channel) error {
 	}
 	name := strings.TrimSpace(channel.Name)
 	_, err := s.client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-		pipe.HSet(ctx, s.keys.Channel(name), map[string]any{
-			"name": name,
-		})
+		pipe.HSet(ctx, s.keys.Channel(name), map[string]any{"name": name})
 		pipe.SAdd(ctx, s.keys.Channels(), name)
 		return nil
 	})
@@ -132,18 +90,12 @@ func (s *RedisStore) PutCallback(ctx context.Context, callback Callback) error {
 	if err := callback.Validate(); err != nil {
 		return err
 	}
-
 	id := strings.TrimSpace(callback.ID)
 	resourceKey := s.keys.Callback(id)
 	urlsKey := s.keys.CallbackURLs(id)
-
 	_, err := s.client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 		pipe.Del(ctx, resourceKey)
-		fields := map[string]any{
-			"id":   id,
-			"type": string(callback.Type),
-		}
-
+		fields := map[string]any{"id": id, "type": string(callback.Type)}
 		switch callback.Type {
 		case CallbackWebhook:
 			pipe.Del(ctx, urlsKey)
@@ -155,7 +107,6 @@ func (s *RedisStore) PutCallback(ctx context.Context, callback Callback) error {
 			fields["name"] = strings.TrimSpace(callback.Lua.Name)
 			pipe.Del(ctx, urlsKey)
 		}
-
 		pipe.HSet(ctx, resourceKey, fields)
 		pipe.SAdd(ctx, s.keys.Callbacks(), id)
 		return nil
@@ -163,28 +114,22 @@ func (s *RedisStore) PutCallback(ctx context.Context, callback Callback) error {
 	return err
 }
 
-// PutSubscriber reconciles both directions of the Channel/Subscriber and
-// Callback/Subscriber graph in one optimistic Redis transaction. Referenced
-// resources must already exist.
 func (s *RedisStore) PutSubscriber(ctx context.Context, subscriber Subscriber) error {
 	if err := subscriber.Validate(); err != nil {
 		return err
 	}
-
 	id := strings.TrimSpace(subscriber.ID)
 	channel := strings.TrimSpace(subscriber.Channel)
 	callbacks := uniqueTrimmed(subscriber.CallbackIDs)
 	if len(callbacks) == 0 {
 		return errors.New("subscriber requires at least one callback")
 	}
-
 	subscriberKey := s.keys.Subscriber(id)
 	callbacksKey := s.keys.SubscriberCallbacks(id)
 	watchKeys := []string{subscriberKey, callbacksKey, s.keys.Channel(channel)}
 	for _, callbackID := range callbacks {
 		watchKeys = append(watchKeys, s.keys.Callback(callbackID))
 	}
-
 	return s.client.Watch(ctx, func(tx *redis.Tx) error {
 		oldChannel, err := tx.HGet(ctx, subscriberKey, "channel").Result()
 		if err != nil && err != redis.Nil {
@@ -194,7 +139,6 @@ func (s *RedisStore) PutSubscriber(ctx context.Context, subscriber Subscriber) e
 		if err != nil {
 			return err
 		}
-
 		references := []string{s.keys.Channel(channel)}
 		for _, callbackID := range callbacks {
 			references = append(references, s.keys.Callback(callbackID))
@@ -204,26 +148,19 @@ func (s *RedisStore) PutSubscriber(ctx context.Context, subscriber Subscriber) e
 			return err
 		}
 		if exists != int64(len(references)) {
-			return errors.New("subscriber references missing channel or callback")
+			return fmt.Errorf("%w: subscriber %s references missing channel or callback", ErrMissingReference, id)
 		}
-
 		oldCallbackSet := stringSet(oldCallbacks)
 		newCallbackSet := stringSet(callbacks)
-
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-			pipe.HSet(ctx, subscriberKey, map[string]any{
-				"id":      id,
-				"channel": channel,
-			})
+			pipe.HSet(ctx, subscriberKey, map[string]any{"id": id, "channel": channel})
 			pipe.Del(ctx, callbacksKey)
 			pipe.SAdd(ctx, callbacksKey, stringsToAny(callbacks)...)
 			pipe.SAdd(ctx, s.keys.Subscribers(), id)
-
 			if oldChannel != "" && oldChannel != channel {
 				pipe.SRem(ctx, s.keys.ChannelSubscribers(oldChannel), id)
 			}
 			pipe.SAdd(ctx, s.keys.ChannelSubscribers(channel), id)
-
 			for callbackID := range oldCallbackSet {
 				if _, retained := newCallbackSet[callbackID]; !retained {
 					pipe.SRem(ctx, s.keys.CallbackSubscribers(callbackID), id)
@@ -238,18 +175,14 @@ func (s *RedisStore) PutSubscriber(ctx context.Context, subscriber Subscriber) e
 	}, watchKeys...)
 }
 
-// PutPublisher reconciles the publisher's forward Channel reference with the
-// Channel's reverse publishers set. The Channel must already exist.
 func (s *RedisStore) PutPublisher(ctx context.Context, publisher Publisher) error {
 	if err := publisher.Validate(); err != nil {
 		return err
 	}
-
 	id := strings.TrimSpace(publisher.ID)
 	channel := strings.TrimSpace(publisher.Channel)
 	publisherKey := s.keys.Publisher(id)
 	channelKey := s.keys.Channel(channel)
-
 	return s.client.Watch(ctx, func(tx *redis.Tx) error {
 		oldChannel, err := tx.HGet(ctx, publisherKey, "channel").Result()
 		if err != nil && err != redis.Nil {
@@ -260,18 +193,12 @@ func (s *RedisStore) PutPublisher(ctx context.Context, publisher Publisher) erro
 			return err
 		}
 		if exists != 1 {
-			return errors.New("publisher references missing channel")
+			return fmt.Errorf("%w: publisher %s references missing channel", ErrMissingReference, id)
 		}
-
-		fields := map[string]any{
-			"id":      id,
-			"channel": channel,
-			"type":    strings.TrimSpace(publisher.Type),
-		}
+		fields := map[string]any{"id": id, "channel": channel, "type": strings.TrimSpace(publisher.Type)}
 		if len(publisher.Config) > 0 {
 			fields["config"] = []byte(publisher.Config)
 		}
-
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 			pipe.Del(ctx, publisherKey)
 			pipe.HSet(ctx, publisherKey, fields)
@@ -285,13 +212,10 @@ func (s *RedisStore) PutPublisher(ctx context.Context, publisher Publisher) erro
 	}, publisherKey, channelKey)
 }
 
-// PutSubscriptionGroup stores group metadata in a HASH and membership in a
-// SET. Empty groups are valid; referenced Subscriber resources must exist.
 func (s *RedisStore) PutSubscriptionGroup(ctx context.Context, group SubscriptionGroup) error {
 	if err := group.Validate(); err != nil {
 		return err
 	}
-
 	id := strings.TrimSpace(group.ID)
 	subscribers := uniqueTrimmed(group.SubscriberIDs)
 	groupKey := s.keys.SubscriptionGroup(id)
@@ -300,7 +224,6 @@ func (s *RedisStore) PutSubscriptionGroup(ctx context.Context, group Subscriptio
 	for _, subscriberID := range subscribers {
 		watchKeys = append(watchKeys, s.keys.Subscriber(subscriberID))
 	}
-
 	return s.client.Watch(ctx, func(tx *redis.Tx) error {
 		if len(subscribers) > 0 {
 			references := make([]string, 0, len(subscribers))
@@ -312,10 +235,9 @@ func (s *RedisStore) PutSubscriptionGroup(ctx context.Context, group Subscriptio
 				return err
 			}
 			if exists != int64(len(references)) {
-				return errors.New("subscription group references missing subscriber")
+				return fmt.Errorf("%w: subscription group %s references missing subscriber", ErrMissingReference, id)
 			}
 		}
-
 		_, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 			pipe.HSet(ctx, groupKey, map[string]any{"id": id})
 			pipe.Del(ctx, membersKey)
