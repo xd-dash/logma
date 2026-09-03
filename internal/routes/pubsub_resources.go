@@ -14,10 +14,13 @@ import (
 type pubSubResourceStore interface {
 	PutChannel(context.Context, pubsubmodel.Channel) error
 	GetChannel(context.Context, string) (pubsubmodel.Channel, error)
+	DeleteChannel(context.Context, string) error
 	PutCallback(context.Context, pubsubmodel.Callback) error
 	GetCallback(context.Context, string) (pubsubmodel.Callback, error)
+	DeleteCallback(context.Context, string) error
 	PutSubscriber(context.Context, pubsubmodel.Subscriber) error
 	GetSubscriber(context.Context, string) (pubsubmodel.Subscriber, error)
+	DeleteSubscriber(context.Context, string) error
 }
 
 type pubSubResourceAPI struct {
@@ -51,10 +54,13 @@ func (a *pubSubResourceAPI) routes(r chi.Router) {
 	r.Route("/pubsub", func(r chi.Router) {
 		r.Post("/channels", a.putChannel)
 		r.Get("/channels/{name}", a.getChannel)
+		r.Delete("/channels/{name}", a.deleteChannel)
 		r.Post("/callbacks", a.putCallback)
 		r.Get("/callbacks/{id}", a.getCallback)
+		r.Delete("/callbacks/{id}", a.deleteCallback)
 		r.Post("/subscribers", a.putSubscriber)
 		r.Get("/subscribers/{id}", a.getSubscriber)
+		r.Delete("/subscribers/{id}", a.deleteSubscriber)
 	})
 }
 
@@ -87,6 +93,18 @@ func (a *pubSubResourceAPI) getChannel(w http.ResponseWriter, r *http.Request) {
 	writeGetResult(w, resource, err)
 }
 
+func (a *pubSubResourceAPI) deleteChannel(w http.ResponseWriter, r *http.Request) {
+	store, ok := a.resourceStore(w)
+	if !ok {
+		return
+	}
+	if err := store.DeleteChannel(r.Context(), chi.URLParam(r, "name")); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (a *pubSubResourceAPI) putCallback(w http.ResponseWriter, r *http.Request) {
 	var resource pubsubmodel.Callback
 	if !decodeResource(w, r, &resource) {
@@ -116,6 +134,18 @@ func (a *pubSubResourceAPI) getCallback(w http.ResponseWriter, r *http.Request) 
 	writeGetResult(w, resource, err)
 }
 
+func (a *pubSubResourceAPI) deleteCallback(w http.ResponseWriter, r *http.Request) {
+	store, ok := a.resourceStore(w)
+	if !ok {
+		return
+	}
+	if err := store.DeleteCallback(r.Context(), chi.URLParam(r, "id")); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (a *pubSubResourceAPI) putSubscriber(w http.ResponseWriter, r *http.Request) {
 	var resource pubsubmodel.Subscriber
 	if !decodeResource(w, r, &resource) {
@@ -143,6 +173,18 @@ func (a *pubSubResourceAPI) getSubscriber(w http.ResponseWriter, r *http.Request
 	}
 	resource, err := store.GetSubscriber(r.Context(), chi.URLParam(r, "id"))
 	writeGetResult(w, resource, err)
+}
+
+func (a *pubSubResourceAPI) deleteSubscriber(w http.ResponseWriter, r *http.Request) {
+	store, ok := a.resourceStore(w)
+	if !ok {
+		return
+	}
+	if err := store.DeleteSubscriber(r.Context(), chi.URLParam(r, "id")); err != nil {
+		http.Error(w, "failed to delete Subscriber", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *pubSubResourceAPI) resourceStore(w http.ResponseWriter) (pubSubResourceStore, bool) {
