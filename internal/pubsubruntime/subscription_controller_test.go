@@ -51,18 +51,18 @@ func TestSubscriptionControllerOwnsActivationLifetime(t *testing.T) {
 	}
 
 	if err := controller.ActivateSubscription(context.Background(), "sub-a"); err != nil {
-		t.Fatalf("idempotent ActivateSubscription: %v", err)
+		t.Fatalf("reconcile ActivateSubscription: %v", err)
 	}
 	dispatch("first")
 	if delivered != 1 {
-		t.Fatalf("deliveries=%d want 1; duplicate activation installed multiple handlers", delivered)
+		t.Fatalf("deliveries=%d want 1; reconciliation installed multiple handlers", delivered)
 	}
 
 	if err := controller.ShutdownSubscription(context.Background(), "sub-a"); err != nil {
 		t.Fatalf("ShutdownSubscription: %v", err)
 	}
 	if err := controller.ShutdownSubscription(context.Background(), "sub-a"); err != nil {
-		t.Fatalf("idempotent ShutdownSubscription: %v", err)
+		t.Fatalf("idempotent declared-inactive ShutdownSubscription: %v", err)
 	}
 	dispatch("second")
 	if delivered != 1 {
@@ -95,6 +95,9 @@ func TestSubscriptionControllerRejectsMissingAndClosedResources(t *testing.T) {
 
 	if err := controller.ActivateSubscription(context.Background(), "missing"); !errors.Is(err, pubsubmodel.ErrNotFound) {
 		t.Fatalf("ActivateSubscription missing error=%v want ErrNotFound", err)
+	}
+	if err := controller.ShutdownSubscription(context.Background(), "missing"); !errors.Is(err, pubsubmodel.ErrNotFound) {
+		t.Fatalf("ShutdownSubscription missing error=%v want ErrNotFound", err)
 	}
 	controller.Close()
 	if err := controller.ActivateSubscription(context.Background(), "missing"); err == nil {
