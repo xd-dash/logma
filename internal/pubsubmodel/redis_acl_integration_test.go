@@ -44,7 +44,7 @@ func TestRedisStoreLogmaPubSubGraphACL(t *testing.T) {
 		Channel:     channel.Name,
 		CallbackIDs: []string{callback.ID},
 	}
-	group := SubscriptionGroup{ID: "group:primary", SubscriberIDs: []string{subscriber.ID}}
+	group := SubscriptionGroup{ID: "group:primary", SubscriberIDs: []string{subscriber.ID, "subscriber:later"}}
 
 	if err := store.PutChannel(ctx, channel); err != nil {
 		t.Fatalf("graph PutChannel under generated ACL: %v", err)
@@ -56,7 +56,7 @@ func TestRedisStoreLogmaPubSubGraphACL(t *testing.T) {
 		t.Fatalf("graph PutSubscriber under generated ACL: %v", err)
 	}
 	if err := store.PutSubscriptionGroup(ctx, group); err != nil {
-		t.Fatalf("graph PutSubscriptionGroup under generated ACL: %v", err)
+		t.Fatalf("weak PutSubscriptionGroup under generated ACL: %v", err)
 	}
 	got, err := store.GetSubscriber(ctx, subscriber.ID)
 	if err != nil {
@@ -65,15 +65,25 @@ func TestRedisStoreLogmaPubSubGraphACL(t *testing.T) {
 	if got.ID != subscriber.ID || got.Channel != subscriber.Channel || len(got.CallbackIDs) != 1 || got.CallbackIDs[0] != callback.ID {
 		t.Fatalf("unexpected subscriber round-trip: %#v", got)
 	}
-	groups, err := store.SubscriberGroupIDs(ctx, subscriber.ID)
-	if err != nil || len(groups) != 1 || groups[0] != group.ID {
-		t.Fatalf("unexpected subscriber group reverse edge: %v, %v", groups, err)
+	gotGroup, err := store.GetSubscriptionGroup(ctx, group.ID)
+	if err != nil || len(gotGroup.SubscriberIDs) != 2 {
+		t.Fatalf("unexpected weak group round-trip: %#v, %v", gotGroup, err)
 	}
-	if err := store.DeleteSubscriber(ctx, subscriber.ID); err == nil {
-		t.Fatal("DeleteSubscriber succeeded while SubscriptionGroup still referenced it")
+	if err := store.DeleteSubscriber(ctx, subscriber.ID); err != nil {
+		t.Fatalf("weak Group blocked DeleteSubscriber under generated ACL: %v", err)
+	}
+	gotGroup, err = store.GetSubscriptionGroup(ctx, group.ID)
+	if err != nil || len(gotGroup.SubscriberIDs) != 2 {
+		t.Fatalf("weak Group changed after Subscriber deletion: %#v, %v", gotGroup, err)
 	}
 	if err := store.DeleteSubscriptionGroup(ctx, group.ID); err != nil {
 		t.Fatalf("DeleteSubscriptionGroup under generated ACL: %v", err)
+	}
+	if err := store.DeleteCallback(ctx, callback.ID); err != nil {
+		t.Fatalf("DeleteCallback after Subscriber removal under generated ACL: %v", err)
+	}
+	if err := store.DeleteChannel(ctx, channel.Name); err != nil {
+		t.Fatalf("DeleteChannel after Subscriber removal under generated ACL: %v", err)
 	}
 
 	assertRedisNOPERM(t, restricted.HSet(ctx, scopeName+":logma:runtime:activation:probe", "state", "active").Err(), "neighboring logma runtime key")
@@ -103,6 +113,7 @@ func TestRedisStoreLogmaPubSubGraphWriteOnlyACLCanCompleteMutations(t *testing.T
 	channel := Channel{Name: "events"}
 	callback := Callback{ID: "hook", Type: CallbackWebhook, Webhook: &WebhookCallback{CallbackURL: "https://example.invalid/hook"}}
 	subscriber := Subscriber{ID: "sub", Channel: channel.Name, CallbackIDs: []string{callback.ID}}
+	group := SubscriptionGroup{ID: "group", SubscriberIDs: []string{subscriber.ID, "later"}}
 	if err := store.PutChannel(ctx, channel); err != nil {
 		t.Fatal(err)
 	}
@@ -112,8 +123,14 @@ func TestRedisStoreLogmaPubSubGraphWriteOnlyACLCanCompleteMutations(t *testing.T
 	if err := store.PutSubscriber(ctx, subscriber); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.PutSubscriptionGroup(ctx, group); err != nil {
+		t.Fatalf("write-only PutSubscriptionGroup: %v", err)
+	}
 	if err := store.DeleteSubscriber(ctx, subscriber.ID); err != nil {
 		t.Fatalf("write-only DeleteSubscriber: %v", err)
+	}
+	if err := store.DeleteSubscriptionGroup(ctx, group.ID); err != nil {
+		t.Fatalf("write-only DeleteSubscriptionGroup: %v", err)
 	}
 	if err := store.DeleteCallback(ctx, callback.ID); err != nil {
 		t.Fatalf("write-only DeleteCallback: %v", err)
