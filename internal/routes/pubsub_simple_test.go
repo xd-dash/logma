@@ -1,10 +1,11 @@
 package routes
 
 import (
-	"errors"
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/xd-dash/logma/internal/pubsubmodel"
 )
 
 func simpleTestRouter(t *testing.T, store *fakePubSubResourceStore) http.Handler {
@@ -75,10 +76,7 @@ func TestSimplePubSubSubscribeRejectsInvalidWebhookBeforePersistence(t *testing.
 
 func TestSimplePubSubSubscribeSurfacesGraphConflict(t *testing.T) {
 	store := newFakePubSubResourceStore()
-	store.putSubErr = errors.New("wrapped: " + pubsubConflictMarker)
-	// Use the actual sentinel so errors.Is continues to define graph conflict
-	// behavior rather than matching message text.
-	store.putSubErr = pubsubModelMissingReference()
+	store.putSubErr = pubsubmodel.ErrMissingReference
 	router := simpleTestRouter(t, store)
 
 	resp := requestResource(t, router, http.MethodPost, "/subscribe", `{"channel":"market","callbackURL":"https://example.invalid/hook"}`)
@@ -89,11 +87,17 @@ func TestSimplePubSubSubscribeSurfacesGraphConflict(t *testing.T) {
 
 func TestSimplePubSubStateUsesOperatorVocabulary(t *testing.T) {
 	store := newFakePubSubResourceStore()
-	store.channels["market"] = channelFixture("market")
-	store.subscribers["screen"] = subscriberFixture("screen", "market")
-	fakePublishers[store] = map[string]pubsubmodel.Publisher{"stonks": {ID: "stonks", Channel: "market", Type: "stonks"}}
-	fakeSubscriptionGroups[store] = map[string]pubsubmodel.SubscriptionGroup{"morning": {ID: "morning"}}
-	fakePublisherGroups[store] = map[string]pubsubmodel.PublisherGroup{"feeds": {ID: "feeds"}}
+	store.channels["market"] = pubsubmodel.Channel{Name: "market"}
+	store.subscribers["screen"] = pubsubmodel.Subscriber{ID: "screen", Channel: "market", CallbackIDs: []string{"hook"}}
+	fakePublishers[store] = map[string]pubsubmodel.Publisher{
+		"stonks": {ID: "stonks", Channel: "market", Type: "stonks"},
+	}
+	fakeSubscriptionGroups[store] = map[string]pubsubmodel.SubscriptionGroup{
+		"morning": {ID: "morning"},
+	}
+	fakePublisherGroups[store] = map[string]pubsubmodel.PublisherGroup{
+		"feeds": {ID: "feeds"},
+	}
 	router := simpleTestRouter(t, store)
 
 	resp := requestResource(t, router, http.MethodGet, "/state", "")
