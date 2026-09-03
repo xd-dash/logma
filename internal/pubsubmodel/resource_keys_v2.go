@@ -63,15 +63,33 @@ func (k ResourceKeysV2) Channels() string    { return k.registry("channels") }
 func (k ResourceKeysV2) Callbacks() string   { return k.registry("callbacks") }
 func (k ResourceKeysV2) Subscribers() string { return k.registry("subscribers") }
 
-func (k ResourceKeysV2) Channel(name string) string            { return k.resource("channel", strings.TrimSpace(name)) }
-func (k ResourceKeysV2) ChannelSubscribers(name string) string { return k.child("channel", strings.TrimSpace(name), "subscribers") }
-func (k ResourceKeysV2) ChannelPublishers(name string) string  { return k.child("channel", strings.TrimSpace(name), "publishers") }
-func (k ResourceKeysV2) Callback(id string) string             { return k.resource("callback", strings.TrimSpace(id)) }
-func (k ResourceKeysV2) CallbackSubscribers(id string) string  { return k.child("callback", strings.TrimSpace(id), "subscribers") }
-func (k ResourceKeysV2) CallbackURLs(id string) string         { return k.child("callback", strings.TrimSpace(id), "urls") }
-func (k ResourceKeysV2) Subscriber(id string) string           { return k.resource("subscriber", strings.TrimSpace(id)) }
-func (k ResourceKeysV2) SubscriberCallbacks(id string) string  { return k.child("subscriber", strings.TrimSpace(id), "callbacks") }
-func (k ResourceKeysV2) Publisher(id string) string            { return k.resource("publisher", strings.TrimSpace(id)) }
+func (k ResourceKeysV2) Channel(name string) string {
+	return k.resource("channel", strings.TrimSpace(name))
+}
+func (k ResourceKeysV2) ChannelSubscribers(name string) string {
+	return k.child("channel", strings.TrimSpace(name), "subscribers")
+}
+func (k ResourceKeysV2) ChannelPublishers(name string) string {
+	return k.child("channel", strings.TrimSpace(name), "publishers")
+}
+func (k ResourceKeysV2) Callback(id string) string {
+	return k.resource("callback", strings.TrimSpace(id))
+}
+func (k ResourceKeysV2) CallbackSubscribers(id string) string {
+	return k.child("callback", strings.TrimSpace(id), "subscribers")
+}
+func (k ResourceKeysV2) CallbackURLs(id string) string {
+	return k.child("callback", strings.TrimSpace(id), "urls")
+}
+func (k ResourceKeysV2) Subscriber(id string) string {
+	return k.resource("subscriber", strings.TrimSpace(id))
+}
+func (k ResourceKeysV2) SubscriberCallbacks(id string) string {
+	return k.child("subscriber", strings.TrimSpace(id), "callbacks")
+}
+func (k ResourceKeysV2) Publisher(id string) string {
+	return k.resource("publisher", strings.TrimSpace(id))
+}
 func (k ResourceKeysV2) SubscriptionGroup(id string) string {
 	return k.resource("subscription-group", strings.TrimSpace(id))
 }
