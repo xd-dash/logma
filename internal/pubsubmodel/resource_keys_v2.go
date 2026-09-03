@@ -1,6 +1,7 @@
 package pubsubmodel
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -16,7 +17,11 @@ type ResourceKeysV2 struct {
 }
 
 func NewResourceKeysV2(scope string) (ResourceKeysV2, error) {
-	parsed, err := keyspace.ParseScope(strings.TrimSpace(scope))
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return ResourceKeysV2{}, errors.New("FATLINE scope is required")
+	}
+	parsed, err := keyspace.ParseScope(scope)
 	if err != nil {
 		return ResourceKeysV2{}, err
 	}
