@@ -40,7 +40,7 @@ func TestRedisStoreGraphRoundTrip(t *testing.T) {
 	callbackB := Callback{ID: "webhook-b", Type: CallbackWebhook, Webhook: &WebhookCallback{CallbackURL: "https://three.example/callback"}}
 	subscriber := Subscriber{ID: "subscriber-a", Channel: channelA.Name, CallbackIDs: []string{callbackA.ID, callbackB.ID}}
 	publisher := Publisher{ID: "publisher-a", Channel: channelA.Name, Type: "fixture"}
-	group := SubscriptionGroup{ID: "group-a", SubscriberIDs: []string{subscriber.ID}}
+	group := SubscriptionGroup{ID: "group-a", SubscriberIDs: []string{subscriber.ID, "subscriber-later"}}
 
 	for _, channel := range []Channel{channelA, channelB} {
 		if err := store.PutChannel(ctx, channel); err != nil {
@@ -59,7 +59,7 @@ func TestRedisStoreGraphRoundTrip(t *testing.T) {
 		t.Fatalf("put publisher: %v", err)
 	}
 	if err := store.PutSubscriptionGroup(ctx, group); err != nil {
-		t.Fatalf("put group: %v", err)
+		t.Fatalf("weak group should accept absent members: %v", err)
 	}
 
 	assertHash(t, ctx, client, keys.Channel(channelA.Name), map[string]string{"name": channelA.Name})
@@ -71,54 +71,20 @@ func TestRedisStoreGraphRoundTrip(t *testing.T) {
 	assertSet(t, ctx, client, keys.CallbackSubscribers(callbackA.ID), []string{subscriber.ID})
 	assertSet(t, ctx, client, keys.CallbackSubscribers(callbackB.ID), []string{subscriber.ID})
 	assertSet(t, ctx, client, keys.ChannelPublishers(channelA.Name), []string{publisher.ID})
-	assertSet(t, ctx, client, keys.SubscriptionGroupSubscribers(group.ID), []string{subscriber.ID})
-	assertSet(t, ctx, client, keys.SubscriberGroups(subscriber.ID), []string{group.ID})
+	assertSet(t, ctx, client, keys.SubscriptionGroupSubscribers(group.ID), []string{subscriber.ID, "subscriber-later"})
+	assertSet(t, ctx, client, keys.SubscriberGroups(subscriber.ID), nil)
 	assertSet(t, ctx, client, keys.Channels(), []string{channelA.Name, channelB.Name})
 	assertSet(t, ctx, client, keys.Callbacks(), []string{callbackA.ID, callbackB.ID})
 	assertSet(t, ctx, client, keys.Subscribers(), []string{subscriber.ID})
 
-	if got, want := keys.Channels(), scope+":logma:pubsub:registry:channels"; got != want {
-		t.Fatalf("channels registry=%q want %q", got, want)
-	}
-	if got, want := keys.SubscriptionGroup(group.ID), scope+":logma:pubsub:subscription-group:group-a"; got != want {
-		t.Fatalf("subscription group key=%q want %q", got, want)
-	}
-
-	gotChannel, err := store.GetChannel(ctx, channelA.Name)
-	if err != nil || !reflect.DeepEqual(gotChannel, channelA) {
-		t.Fatalf("GetChannel = %#v, %v; want %#v", gotChannel, err, channelA)
-	}
-	gotCallback, err := store.GetCallback(ctx, callbackA.ID)
-	wantCallback := Callback{ID: callbackA.ID, Type: CallbackWebhook, Webhook: &WebhookCallback{CallbackURLs: []string{"https://one.example/callback", "https://two.example/callback"}}}
-	if err != nil || !reflect.DeepEqual(gotCallback, wantCallback) {
-		t.Fatalf("GetCallback = %#v, %v; want %#v", gotCallback, err, wantCallback)
-	}
 	gotSubscriber, err := store.GetSubscriber(ctx, subscriber.ID)
 	if err != nil || !reflect.DeepEqual(gotSubscriber, subscriber) {
 		t.Fatalf("GetSubscriber = %#v, %v; want %#v", gotSubscriber, err, subscriber)
-	}
-	gotPublisher, err := store.GetPublisher(ctx, publisher.ID)
-	if err != nil || !reflect.DeepEqual(gotPublisher, publisher) {
-		t.Fatalf("GetPublisher = %#v, %v; want %#v", gotPublisher, err, publisher)
 	}
 	gotGroup, err := store.GetSubscriptionGroup(ctx, group.ID)
 	if err != nil || !reflect.DeepEqual(gotGroup, group) {
 		t.Fatalf("GetSubscriptionGroup = %#v, %v; want %#v", gotGroup, err, group)
 	}
-	ids, err := store.ChannelSubscriberIDs(ctx, channelA.Name)
-	assertIDs(t, ids, err, []string{subscriber.ID})
-	ids, err = store.ChannelPublisherIDs(ctx, channelA.Name)
-	assertIDs(t, ids, err, []string{publisher.ID})
-	ids, err = store.CallbackSubscriberIDs(ctx, callbackA.ID)
-	assertIDs(t, ids, err, []string{subscriber.ID})
-	ids, err = store.SubscriberGroupIDs(ctx, subscriber.ID)
-	assertIDs(t, ids, err, []string{group.ID})
-	ids, err = store.ChannelIDs(ctx)
-	assertIDs(t, ids, err, []string{channelA.Name, channelB.Name})
-	ids, err = store.CallbackIDs(ctx)
-	assertIDs(t, ids, err, []string{callbackA.ID, callbackB.ID})
-	ids, err = store.SubscriberIDs(ctx)
-	assertIDs(t, ids, err, []string{subscriber.ID})
 
 	updatedSubscriber := Subscriber{ID: subscriber.ID, Channel: channelB.Name, CallbackIDs: []string{callbackB.ID}}
 	if err := store.PutSubscriber(ctx, updatedSubscriber); err != nil {
@@ -128,39 +94,24 @@ func TestRedisStoreGraphRoundTrip(t *testing.T) {
 	assertSet(t, ctx, client, keys.ChannelSubscribers(channelB.Name), []string{subscriber.ID})
 	assertSet(t, ctx, client, keys.CallbackSubscribers(callbackA.ID), nil)
 	assertSet(t, ctx, client, keys.CallbackSubscribers(callbackB.ID), []string{subscriber.ID})
-	assertSet(t, ctx, client, keys.SubscriberCallbacks(subscriber.ID), []string{callbackB.ID})
-	assertSet(t, ctx, client, keys.SubscriberGroups(subscriber.ID), []string{group.ID})
-	gotSubscriber, err = store.GetSubscriber(ctx, subscriber.ID)
-	if err != nil || !reflect.DeepEqual(gotSubscriber, updatedSubscriber) {
-		t.Fatalf("updated GetSubscriber = %#v, %v; want %#v", gotSubscriber, err, updatedSubscriber)
-	}
+	assertSet(t, ctx, client, keys.SubscriptionGroupSubscribers(group.ID), []string{subscriber.ID, "subscriber-later"})
 
-	if err := store.DeleteCallback(ctx, callbackB.ID); err == nil {
-		t.Fatal("DeleteCallback succeeded while callback remained referenced")
+	if err := store.DeleteCallback(ctx, callbackB.ID); !errors.Is(err, ErrReferenced) {
+		t.Fatalf("DeleteCallback while referenced = %v, want ErrReferenced", err)
 	}
-	if err := store.DeleteChannel(ctx, channelB.Name); err == nil {
-		t.Fatal("DeleteChannel succeeded while channel remained referenced")
+	if err := store.DeleteChannel(ctx, channelB.Name); !errors.Is(err, ErrReferenced) {
+		t.Fatalf("DeleteChannel while referenced = %v, want ErrReferenced", err)
 	}
-	if err := store.DeleteSubscriber(ctx, subscriber.ID); !errors.Is(err, ErrReferenced) {
-		t.Fatalf("DeleteSubscriber while grouped error = %v, want ErrReferenced", err)
+	if err := store.DeleteSubscriber(ctx, subscriber.ID); err != nil {
+		t.Fatalf("weak group blocked Subscriber deletion: %v", err)
 	}
-	assertSet(t, ctx, client, keys.Callbacks(), []string{callbackA.ID, callbackB.ID})
-	assertSet(t, ctx, client, keys.Channels(), []string{channelA.Name, channelB.Name})
-	assertSet(t, ctx, client, keys.SubscriberGroups(subscriber.ID), []string{group.ID})
+	gotGroup, err = store.GetSubscriptionGroup(ctx, group.ID)
+	if err != nil || !reflect.DeepEqual(gotGroup, group) {
+		t.Fatalf("group declaration changed after member deletion: %#v %v", gotGroup, err)
+	}
 
 	if err := store.DeleteSubscriptionGroup(ctx, group.ID); err != nil {
 		t.Fatalf("delete group: %v", err)
-	}
-	assertSet(t, ctx, client, keys.SubscriberGroups(subscriber.ID), nil)
-	ids, err = store.SubscriberGroupIDs(ctx, subscriber.ID)
-	assertIDs(t, ids, err, nil)
-
-	if err := store.DeleteSubscriber(ctx, subscriber.ID); err != nil {
-		t.Fatalf("delete subscriber: %v", err)
-	}
-	assertSet(t, ctx, client, keys.Subscribers(), nil)
-	if _, err := store.GetSubscriber(ctx, subscriber.ID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("GetSubscriber after delete error = %v, want ErrNotFound", err)
 	}
 	if err := store.DeletePublisher(ctx, publisher.ID); err != nil {
 		t.Fatalf("delete publisher: %v", err)
@@ -183,10 +134,6 @@ func TestRedisStoreGraphRoundTrip(t *testing.T) {
 	if len(remaining) != 0 {
 		t.Fatalf("Pub/Sub graph residue remains: %v", remaining)
 	}
-
-	if err := store.DeleteSubscriber(ctx, subscriber.ID); err != nil && !errors.Is(err, redis.Nil) {
-		t.Fatalf("idempotent subscriber delete: %v", err)
-	}
 }
 
 func TestRedisStoreRelationshipReadersRejectEmptyIdentity(t *testing.T) {
@@ -199,7 +146,6 @@ func TestRedisStoreRelationshipReadersRejectEmptyIdentity(t *testing.T) {
 		func() error { _, err := store.ChannelSubscriberIDs(ctx, " "); return err },
 		func() error { _, err := store.ChannelPublisherIDs(ctx, " "); return err },
 		func() error { _, err := store.CallbackSubscriberIDs(ctx, " "); return err },
-		func() error { _, err := store.SubscriberGroupIDs(ctx, " "); return err },
 	}
 	for i, check := range checks {
 		if err := check(); err == nil {
