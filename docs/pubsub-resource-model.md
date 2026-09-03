@@ -1,55 +1,49 @@
-# Logma Pub/Sub v2 design
+# Logma Pub/Sub v2
 
-Redis is the first storage/transport provider; Redis syntax is not the Logma operator model.
+Redis is the first provider. Redis syntax is not the Logma operator model.
 
-## Operator model
+## Operator surface
 
-Ordinary Logma stays close to the historical service:
+Ordinary Logma stays small:
 
 ```text
-subscribe a callback to a channel
-unsubscribe it
-save useful groups
-activate or shut down a group
-register/reconcile a publisher
-inspect declaration state
+subscribe
+unsubscribe
+group
+activate
+shutdown
+state
+publisher registration/reconciliation
 ```
 
-The normalized `/pubsub/*` API remains an advanced control-plane surface. Provider details such as HASH/SET layout, reverse indexes, WATCH retry, encoded provider addresses, Redis commands, worker queues, and runtime tokens stay below the ordinary surface.
+`/pubsub/*` is the normalized advanced control-plane surface. Provider details such as HASH/SET layout, reverse indexes, WATCH retry, encoded addresses, Redis commands, worker queues, and runtime tokens stay below the ordinary surface.
 
-## Durable resources
+## Durable model
 
 ```text
 Channel
-  durable logical namespace
-  may exist with zero Subscribers
-  does not imply a live Redis listener
+  logical namespace; may exist empty
 
 Callback
-  independently addressable action
-  webhook -> one or many HTTP(S) targets
-  lua     -> function name (runtime support remains separate)
+  webhook: one or more HTTP(S) targets
+  lua: function name; runtime support is separate
 
 Subscriber
-  durable attachment to one Channel and one or more Callbacks
-  presented as Subscription in the operator surface
+  one Channel + one or more Callbacks
+  presented as Subscription to operators
 
 Publisher
-  durable producer binding to one Channel
-  type selects an internal provider adapter
+  producer declaration bound to one Channel
+  Type selects an internal provider adapter
 
 SubscriptionGroup
   weak operational set of Subscriber identities
-  members may be absent
 
 PublisherGroup
-  advanced-control-plane weak set of Publisher identities
-  not part of the ordinary surface until producer-group operations consume it
+  advanced-only weak set of Publisher identities
 ```
 
-`ServerlessEndpoint` is intentionally absent from the current v2 model. SSE/serverless response behavior is a runtime/surface capability until a concrete durable lifecycle requires its own resource identity.
-
-## Strong relationships
+`ServerlessEndpoint` is not a v2 durable resource. SSE/serverless behavior remains a runtime/surface capability until it has a concrete independent lifecycle.
 
 Only validity-defining relationships are strong:
 
@@ -59,46 +53,48 @@ Subscriber -> Callback
 Publisher  -> Channel
 ```
 
-Reverse SETs support guarded deletion without SCAN. Groups do not create deletion authority.
+Groups may name absent members. Reverse SETs exist only where they buy a concrete query or guarded-deletion invariant.
 
-## Redis graph
+## Provider grammar and authority
 
-Canonical durable addresses are scope-first and injectively encode opaque identities:
-
-```text
-<scope>:logma:pubsub:channel:<id>
-<scope>:logma:pubsub:channel:<id>:subscribers
-<scope>:logma:pubsub:channel:<id>:publishers
-
-<scope>:logma:pubsub:callback:<id>
-<scope>:logma:pubsub:callback:<id>:urls
-<scope>:logma:pubsub:callback:<id>:subscribers
-
-<scope>:logma:pubsub:subscriber:<id>
-<scope>:logma:pubsub:subscriber:<id>:callbacks
-
-<scope>:logma:pubsub:publisher:<id>
-
-<scope>:logma:pubsub:subscription-group:<id>
-<scope>:logma:pubsub:subscription-group:<id>:subscribers
-
-<scope>:logma:pubsub:publisher-group:<id>
-<scope>:logma:pubsub:publisher-group:<id>:publishers
-
-<scope>:logma:pubsub:registry:...
-```
-
-The provider retains HASH + SET persistence, explicit registries, bounded optimistic transactions, and cheap representation-integrity checks. It does not add background repair/scrubbing machinery while the graph writer remains trusted.
-
-## Atomic `/subscribe`
-
-The convenience operation:
+Canonical provider addresses are scope-first and opaque identities are injectively encoded:
 
 ```text
-POST /subscribe
+<scope>:logma:pubsub:...
+<scope>:logma:transport:channel:<encoded-logical-channel>
 ```
 
-compiles to:
+Graph and transport authority are independent:
+
+```text
+LogmaPubSubGraph(Read | Write)
+  -> scoped keys
+  -> no Pub/Sub channel authority
+
+LogmaPubSubTransport(Publish | Subscribe)
+  -> scoped transport channels
+  -> no graph-key authority
+```
+
+Redis ACL enforces provider scope and command/channel families. Trusted `RedisStore` code enforces graph semantics. Generic graph-write Redis credentials therefore belong to the trusted Logma control composition, not ordinary applications.
+
+## Storage
+
+The canonical graph remains Redis HASH + SET with explicit registries. This is provider representation, not operator vocabulary.
+
+Keep:
+
+- scope-first injective key construction;
+- explicit registries rather than SCAN;
+- reverse indexes for validity-defining relationships;
+- bounded WATCH retry for optimistic graph reconciliation;
+- cheap embedded-identity/address consistency checks.
+
+Do not add repair daemons, background scrubbers, or automatic orphan reconstruction without production evidence.
+
+## Atomic subscribe
+
+`POST /subscribe` is one operation:
 
 ```text
 ensure Channel
@@ -106,102 +102,112 @@ create Callback
 create Subscriber
 ```
 
-inside one provider-owned transaction. Callback and Subscriber identities are create-only for this path. Conflicts do not overwrite independently managed resources or leave partial graph state.
+The provider performs it atomically. Callback and Subscriber identities are create-only on this path, so a collision neither overwrites independently managed resources nor leaves partial state.
 
-## Scope and authority
+## Runtime model
 
-Transport is scoped separately from durable storage:
-
-```text
-logical Channel:
-  market:quotes
-
-Redis transport:
-  <scope>:logma:transport:channel:market%3Aquotes
-```
-
-Semantic provider grants remain separate:
-
-```text
-LogmaPubSubGraph(Read | Write)
-  -> ~<scope>:logma:pubsub:*
-
-LogmaPubSubTransport(Publish | Subscribe)
-  -> &<scope>:logma:transport:channel:*
-```
-
-Redis ACL enforces scope plus command/channel families. `RedisStore` enforces graph semantics. A generic graph-write Redis credential therefore belongs to the trusted Logma control service rather than arbitrary Fatline applications.
-
-## Subscription runtime
-
-Durable Channel existence and live listener existence are separate.
-
-Normal first-activation lifecycle is:
+A durable Channel is not a live Redis listener. Redis Pub/Sub has no replay, so an empty listener preserves nothing.
 
 ```text
 first active Subscription on Channel
-    -> create shared Redis listener
-    -> install Subscription handler
-    -> wait for Redis SUBSCRIBE acknowledgement
+    -> create shared listener
 
-more active Subscriptions
-    -> attach handlers to the shared listener
+additional active Subscriptions
+    -> share listener
 
 last active Subscription shuts down
-    -> cancel its handler/delivery context
-    -> release the Redis listener when no handlers remain
+    -> release listener
 ```
 
-Installing the first handler before the initial acknowledgement removes an ACK-before-handler window. A Subscriber handle owns its own cancellation context beneath the shared Channel listener, so shutdown cancels queued/in-flight work for that Subscription and a stale dispatch snapshot cannot enqueue new work after detach.
+Each active Subscription owns a child cancellation context beneath the shared listener. Detach cancels queued/in-flight callback work for that Subscription and prevents a stale handler snapshot from enqueueing new work after shutdown.
 
-`ActivateSubscription(id)` is ensure-current, not merely ensure-present. Reconciliation behaves differently from first activation because an existing handler is already known-good:
+### First activation
+
+There is no previous known-good handler:
 
 ```text
-load replacement declaration
--> acquire/locate target Channel listener
--> wait for the target listener's observed current readiness
--> install replacement handler
+load declaration
+-> acquire listener
+-> install handler
+-> wait for observed SUBSCRIBE readiness
+-> publish active handle
+-> success
+```
+
+The handler is installed before the initial ACK because Redis may deliver immediately after acknowledgement.
+
+### Reconciliation
+
+An already-active Subscription has a previous known-good handler:
+
+```text
+keep old handler
+-> load replacement declaration
+-> acquire/locate target listener
+-> wait for target listener's observed current readiness
+-> install replacement
 -> publish replacement handle
 -> retire old handler
 ```
 
-If readiness or lookup fails, the old handler remains installed. Same-identity operations serialize; different Subscription identities do not share a controller-wide operation lock.
+If lookup or readiness fails, the previous handler remains installed. Same-identity operations serialize; different Subscription identities do not share one controller-wide operation lock.
 
-Redis readiness is generation-aware: after the subscription loop observes a lost connection and enters reconnect, a fresh readiness signal is required. This is an observed readiness boundary, not a guarantee that the network cannot fail immediately after an operation returns. Logma remains best-effort Pub/Sub signaling.
+### Readiness
 
-Request context bounds lookup/readiness for one command. Controller/service context owns the successfully established runtime after the request returns.
+Readiness is generation-aware at the outer Logma subscription loop. When that loop observes connection loss and enters reconnect, its readiness signal resets; later reconciliation waits for a fresh observed ACK rather than accepting a historical one.
 
-## Bounded webhook delivery
+This is an observation boundary, not a durability promise. The network can fail immediately after success. Logma remains best-effort Pub/Sub signaling.
 
-Redis receive must not block behind slow HTTP callbacks.
+`Runtime.Active` or a goroutine existing is not an operator-level readiness proof.
 
-The v2 runtime restores the historical Logma dispatcher shape:
+## Request and runtime lifetime
+
+```text
+request context
+  lookup / validation / readiness deadline
+
+controller / reconciler / service context
+  successful runtime lifetime
+
+shutdown / Close / process termination
+  cancellation
+```
+
+A failed replacement must not erase a previous known-good definition. A successful activation must not die merely because its HTTP request returned.
+
+## Bounded callback delivery
+
+Redis receive must not synchronously wait on arbitrary HTTP endpoints:
 
 ```text
 Redis receive
-    -> bounded queue (256)
-    -> fixed workers (4)
+    -> service-wide bounded queue: 256
+    -> workers: 4
     -> webhook requests
 ```
 
-Queue saturation drops/logs instead of blocking the receive loop or growing memory without bound. Delivery contexts are scoped to individual active Subscriptions, not merely the shared Channel listener. This remains weak/ephemeral signaling semantics; NQC owns repair/anti-entropy when correctness requires more than best-effort Pub/Sub delivery.
+Overflow is counted and dropped without synchronous logging on the Redis receive path. Callback URLs are not written into failure logs because they may contain signed or secret material.
+
+The current dispatcher is a service-wide capacity bound, not a fairness scheduler. One noisy Subscription can consume queue capacity. Do not add per-Subscription queues or fairness machinery until production evidence shows starvation is a real requirement.
+
+NQC owns anti-entropy/repair when correctness requires more than best-effort notification. Logma does not become a durable queue for NQC.
 
 ## Publisher runtime
 
-Generic Publisher reconciliation is deliberately smaller:
+Generic Publisher reconciliation is deliberately small:
 
 ```text
 load Publisher
--> validate referenced durable Channel exists
+-> validate durable Channel exists
 -> resolve Publisher.Type provider
--> PublisherProvider.EnsureActive(service-owned context)
+-> provider.EnsureActive(service-owned context)
 ```
 
-Generic Logma no longer starts an empty consumer listener before a producer. An empty listener does not provide delivery durability. Concrete providers own any stronger producer/consumer readiness requirement they actually need.
+Generic Logma does not start an empty consumer listener before a producer. Concrete providers own any stronger producer/consumer readiness dependency they actually require.
 
-## Groups
+## Groups and state
 
-Groups are weak control sets resolved once at execution time:
+Groups are weak best-effort control sets resolved when an operation executes:
 
 ```text
 Group identities
@@ -209,25 +215,7 @@ Group identities
 -> completed / missing / failed
 ```
 
-The façade does not preflight and then re-read members in the runtime. `ErrNotFound` maps to `missing`; other execution errors map to `failed`.
-
-## Runtime ownership and restart
-
-Activation is process-local and ephemeral. Durable declarations are not automatically desired runtime state.
-
-Initial production contract:
-
-```text
-one Logma runtime owner per FATLINE_SCOPE
-```
-
-or equivalent request routing to that owner. Distributed leases/leader election are deferred until multiple runtime owners per scope become a demonstrated requirement.
-
-After restart, Fatline profile/bootstrap intent may activate named Groups. The resource model does not add `desiredActive` to every Subscriber merely to reconstruct runtime state.
-
-## `/state`
-
-`GET /state` is declaration inventory, not runtime observation. Ordinary state should expose ordinary nouns only:
+`GET /state` is declaration inventory, not runtime observation. Ordinary state exposes only:
 
 ```text
 channels
@@ -236,26 +224,69 @@ publishers
 groups
 ```
 
-Advanced-only PublisherGroup remains under `/pubsub/*` until an operator workflow uses it.
+A sequential inventory read is not promised to be an atomic cross-resource snapshot. Add transactional observation only if an operator contract actually requires it.
 
-## Package composition
+## Runtime ownership and restart
+
+Activation is process-local and ephemeral. Durable declarations are not desired runtime state.
+
+Initial production contract:
 
 ```text
-Logma       ephemeral signaling/fanout
-NQC         cache coherence and anti-entropy repair
+one Logma runtime owner per FATLINE_SCOPE
+```
+
+or equivalent routing to that owner. Distributed leases/leader election are deferred until multiple runtime owners per scope become a demonstrated requirement.
+
+Restart reconstruction belongs to Fatline profile/bootstrap intent, for example activating named Groups after Logma starts. Do not add `desiredActive` to every Subscriber merely to survive restart.
+
+## Package boundaries
+
+```text
+Logma       ephemeral signaling/callback fanout
+NQC         cache coherence and anti-entropy
 ratelimiter rate/lifecycle enforcement
 Marai       narrow crypto authority
 Redis       shared mechanical substrate
-Fatline     capability/profile/runtime composition
-Huram       exact-source qualification and deployment evidence
+Fatline     profile/capability/runtime composition
+Huram       exact-source qualification/deployment evidence
 ```
 
-The remaining composition boundary is one explicit Fatline-owned `LogmaService` (or equivalent) that owns graph and transport Redis clients separately, constructs the Subscription runtime/controller and Publisher registry/reconciler, exposes operator and advanced routers, and closes all owned runtime workers/listeners cleanly. Until that root exists, the current `cmd/api` constructors are a development composition and group runtime operations are intentionally not production-ready.
+Each package owns its semantic provider requirements; Fatline composes them. Higher layers should not copy package-internal Redis command lists.
 
-The remaining ordinary-surface symmetry is task-shaped unsubscribe. It should stop the locally owned active Subscription and delete its durable Subscriber plus convenience-owned Callback without deleting a shared Channel or an independently managed/shared Callback.
+## Remaining production work
 
-## Design pressure rule
+Do these before adding more resource nouns.
 
-When an abstraction repeatedly requires new lifecycle/concurrency guards, first ask whether the abstraction should exist. This review removed standalone empty Channel runtime semantics from ordinary control and removed speculative `ServerlessEndpoint` resource semantics rather than continuing to harden them.
+### Composition root
 
-Only machinery that preserves an observable contract earns complexity budget. Cheap correctness checks remain; speculative repair, distributed ownership, new resource nouns, and provider vocabulary stay out until a real consumer requires them.
+Current `cmd/api` is still development composition. The production boundary should be one Fatline-owned service:
+
+```text
+LogmaService
+  graph Redis client/store
+  transport Redis client
+  Subscription runtime/controller
+  Publisher registry/reconciler
+  operator router
+  advanced router
+  Close()
+```
+
+Separate credentials remain separate; ownership and cleanup become explicit. Router constructors should not independently manufacture unmanaged Redis clients.
+
+### Task-shaped unsubscribe
+
+Complete ordinary create/delete symmetry with a task-shaped operation such as:
+
+```text
+DELETE /subscriptions/{id}
+```
+
+It should stop the locally owned active Subscription, remove its durable Subscriber, remove a convenience-owned Callback only when safe, and retain a shared Channel. It must not infer ownership of an independently managed/shared Callback.
+
+## Design rule
+
+Only machinery that preserves an observable contract earns complexity budget.
+
+When edge-case guards repeatedly accumulate around an abstraction, reconsider the abstraction before hardening it again. Keep cheap correctness checks; defer speculative repair, distributed ownership, fairness schedulers, new resource nouns, and provider vocabulary until a real consumer requires them.
