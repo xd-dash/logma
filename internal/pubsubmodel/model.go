@@ -134,7 +134,9 @@ func (s Subscriber) Validate() error {
 // Publisher represents a producer binding. Creating/activating a Publisher is
 // expected to ensure its Channel exists before the producer starts. Config is
 // deliberately opaque here so producer-specific contracts remain owned by the
-// producer integration rather than the generic Pub/Sub model.
+// producer integration rather than the generic Pub/Sub model. Opaque still
+// means valid JSON: invalid RawMessage values would otherwise persist data that
+// cannot be serialized through the resource API later.
 type Publisher struct {
 	ID      string          `json:"id"`
 	Channel string          `json:"channel"`
@@ -151,6 +153,9 @@ func (p Publisher) Validate() error {
 	}
 	if strings.TrimSpace(p.Type) == "" {
 		return errors.New("publisher type is required")
+	}
+	if len(p.Config) > 0 && !json.Valid(p.Config) {
+		return errors.New("publisher config must be valid JSON")
 	}
 	return nil
 }
