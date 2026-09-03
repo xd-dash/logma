@@ -122,7 +122,7 @@ func TestRuntimeAttachesWebhookSubscriberToActiveChannel(t *testing.T) {
 		callbacks: map[string]pubsubmodel.Callback{
 			"callback-a": {
 				ID:   "callback-a",
-				Type: CallbackWebhook,
+				Type: pubsubmodel.CallbackWebhook,
 				Webhook: &pubsubmodel.WebhookCallback{CallbackURLs: []string{
 					"https://one.example/callback",
 					"https://two.example/callback",
@@ -175,7 +175,7 @@ func TestRuntimeAttachesWebhookSubscriberToActiveChannel(t *testing.T) {
 func TestRuntimeRequiresActiveChannelForSubscriber(t *testing.T) {
 	store := fakeStore{
 		subscribers: map[string]pubsubmodel.Subscriber{"sub-a": {ID: "sub-a", Channel: "events", CallbackIDs: []string{"callback-a"}}},
-		callbacks:   map[string]pubsubmodel.Callback{"callback-a": {ID: "callback-a", Type: CallbackWebhook, Webhook: &pubsubmodel.WebhookCallback{CallbackURL: "https://one.example/callback"}}},
+		callbacks:   map[string]pubsubmodel.Callback{"callback-a": {ID: "callback-a", Type: pubsubmodel.CallbackWebhook, Webhook: &pubsubmodel.WebhookCallback{CallbackURL: "https://one.example/callback"}}},
 	}
 	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:0"})
 	t.Cleanup(func() { _ = client.Close() })
