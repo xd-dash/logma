@@ -44,12 +44,15 @@ func (s *RedisStore) GetPublisherGroup(ctx context.Context, id string) (Publishe
 	if len(fields) == 0 {
 		return PublisherGroup{}, fmt.Errorf("%w: publisher group %s", ErrNotFound, id)
 	}
+	if err := storedIdentity("publisher group", id, fields["id"]); err != nil {
+		return PublisherGroup{}, err
+	}
 	publishers, err := s.client.SMembers(ctx, s.keys.PublisherGroupPublishers(id)).Result()
 	if err != nil {
 		return PublisherGroup{}, err
 	}
 	sort.Strings(publishers)
-	group := PublisherGroup{ID: fields["id"], PublisherIDs: publishers}
+	group := PublisherGroup{ID: id, PublisherIDs: publishers}
 	if err := group.Validate(); err != nil {
 		return PublisherGroup{}, fmt.Errorf("decode publisher group %s: %w", id, err)
 	}
