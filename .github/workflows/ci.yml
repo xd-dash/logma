@@ -27,15 +27,11 @@ jobs:
 
       - name: Check formatting
         run: |
-          failed=0
-          for file in internal/pubsubmodel/*.go; do
-            diff="$(gofmt -d "$file")"
-            if [ -n "$diff" ]; then
-              printf 'gofmt diff for %s:\n%s\n' "$file" "$diff"
-              failed=1
-            fi
-          done
-          exit "$failed"
+          diff="$(gofmt -d .)"
+          if [ -n "$diff" ]; then
+            printf 'gofmt diff:\n%s\n' "$diff"
+            exit 1
+          fi
 
       - name: Vet
         run: go vet ./...
