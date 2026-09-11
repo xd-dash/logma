@@ -30,9 +30,10 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -t go_files < <(find . -type f -name '*.go' -not -path './.git/*' -print)
-          diff="$(gofmt -d "${go_files[@]}")"
-          if [[ -n "$diff" ]]; then
-            printf 'gofmt diff:\n%s\n' "$diff"
+          mapfile -t unformatted < <(gofmt -l "${go_files[@]}")
+          if (( ${#unformatted[@]} != 0 )); then
+            printf 'gofmt required:\n'
+            printf '  %s\n' "${unformatted[@]}"
             exit 1
           fi
 
