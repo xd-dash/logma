@@ -67,38 +67,20 @@ func (p AuthPolicy) Normalize() AuthPolicy {
 
 func (p AuthPolicy) RequiredCapabilities() AuthCapability {
 	var required AuthCapability
-	if len(p.Resources) != 0 || len(p.Actions) != 0 {
-		required |= AuthCapabilityResource
-	}
-	if len(p.Claims) != 0 {
-		required |= AuthCapabilityClaims
-	}
-	if len(p.Roles) != 0 {
-		required |= AuthCapabilityRoles
-	}
-	if len(p.Audiences) != 0 {
-		required |= AuthCapabilityAudience
-	}
-	if p.Delegation {
-		required |= AuthCapabilityDelegation
-	}
-	if p.RequireExpiry {
-		required |= AuthCapabilityExpiry
-	}
-	if len(p.Networks) != 0 {
-		required |= AuthCapabilityNetwork
-	}
+	if len(p.Resources) != 0 || len(p.Actions) != 0 { required |= AuthCapabilityResource }
+	if len(p.Claims) != 0 { required |= AuthCapabilityClaims }
+	if len(p.Roles) != 0 { required |= AuthCapabilityRoles }
+	if len(p.Audiences) != 0 { required |= AuthCapabilityAudience }
+	if p.Delegation { required |= AuthCapabilityDelegation }
+	if p.RequireExpiry { required |= AuthCapabilityExpiry }
+	if len(p.Networks) != 0 { required |= AuthCapabilityNetwork }
 	return required
 }
 
 func (p AuthPolicy) Validate(profile AuthProfile) error {
-	if p.Version != 1 {
-		return fmt.Errorf("unsupported auth policy version %d", p.Version)
-	}
+	if p.Version != 1 { return fmt.Errorf("unsupported auth policy version %d", p.Version) }
 	known, ok := AuthProfiles[profile.ID]
-	if !ok || known.Capabilities != profile.Capabilities {
-		return fmt.Errorf("unknown auth profile %q", profile.ID)
-	}
+	if !ok || known.Capabilities != profile.Capabilities { return fmt.Errorf("unknown auth profile %q", profile.ID) }
 	if required := p.RequiredCapabilities(); required&^profile.Capabilities != 0 {
 		return fmt.Errorf("auth profile %q lacks capabilities %#x", profile.ID, required&^profile.Capabilities)
 	}
@@ -106,18 +88,13 @@ func (p AuthPolicy) Validate(profile AuthProfile) error {
 }
 
 func (p AuthPolicy) Digest() (string, error) {
-	normalized := p.Normalize()
-	payload, err := json.Marshal(normalized)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256(payload)
-	return "sha256:" + hex.EncodeToString(sum[:]), nil
+	payload, err := json.Marshal(p.Normalize())
+	if err != nil { return "", err }
+	return digestBytes(payload), nil
 }
 
-// Allows enforces monotonic narrowing. A child policy may remove authority but
-// cannot introduce an action, resource, audience, role, claim value, delegation,
-// expiry requirement, or network scope absent from its parent grant.
+// Allows enforces monotonic narrowing. A child may remove authority but cannot
+// introduce authority not present in its parent grant.
 func (p AuthPolicy) Allows(child AuthPolicy) error {
 	parent := p.Normalize()
 	child = child.Normalize()
@@ -126,21 +103,13 @@ func (p AuthPolicy) Allows(child AuthPolicy) error {
 		"audiences": {parent.Audiences, child.Audiences}, "roles": {parent.Roles, child.Roles},
 		"networks": {parent.Networks, child.Networks},
 	} {
-		if !subset(pair[1], pair[0]) {
-			return fmt.Errorf("child %s exceed parent authority", name)
-		}
+		if !subset(pair[1], pair[0]) { return fmt.Errorf("child %s exceed parent authority", name) }
 	}
-	if child.Delegation && !parent.Delegation {
-		return errors.New("child delegation exceeds parent authority")
-	}
-	if child.RequireExpiry && !parent.RequireExpiry {
-		return errors.New("child expiry requirement exceeds parent policy shape")
-	}
+	if child.Delegation && !parent.Delegation { return errors.New("child delegation exceeds parent authority") }
+	if child.RequireExpiry && !parent.RequireExpiry { return errors.New("child expiry requirement exceeds parent policy shape") }
 	for key, values := range child.Claims {
 		parentValues, ok := parent.Claims[key]
-		if !ok || !subset(values, parentValues) {
-			return fmt.Errorf("child claim %q exceeds parent authority", key)
-		}
+		if !ok || !subset(values, parentValues) { return fmt.Errorf("child claim %q exceeds parent authority", key) }
 	}
 	return nil
 }
@@ -166,9 +135,7 @@ type Binding struct {
 
 func (b Binding) Validate() error {
 	for name, value := range map[string]string{"org_id": b.OrgID, "tenant_id": b.TenantID} {
-		if err := validateSegment(value); err != nil {
-			return fmt.Errorf("%s: %w", name, err)
-		}
+		if err := validateSegment(value); err != nil { return fmt.Errorf("%s: %w", name, err) }
 	}
 	if b.ServiceID != "" {
 		if err := validateSegment(b.ServiceID); err != nil { return fmt.Errorf("service_id: %w", err) }
@@ -177,24 +144,22 @@ func (b Binding) Validate() error {
 		if b.ServiceID == "" { return errors.New("route_id requires service_id") }
 		if err := validateSegment(b.RouteID); err != nil { return fmt.Errorf("route_id: %w", err) }
 	}
-	if _, ok := AuthProfiles[b.AuthProfile]; !ok {
-		return fmt.Errorf("unknown auth_profile %q", b.AuthProfile)
-	}
-	if !strings.HasPrefix(b.AuthPolicyDigest, "sha256:") || len(b.AuthPolicyDigest) != len("sha256:")+64 {
-		return errors.New("auth_policy_digest must be sha256:<64 hex chars>")
-	}
-	if _, err := hex.DecodeString(strings.TrimPrefix(b.AuthPolicyDigest, "sha256:")); err != nil {
-		return errors.New("auth_policy_digest is not hexadecimal")
-	}
-	if (b.RateProfile == "") != (b.RatePolicyCode == "") {
-		return errors.New("rate_profile and rate_policy_code must be supplied together")
-	}
-	if b.Revision == 0 {
-		return errors.New("revision must be non-zero")
-	}
+	if _, ok := AuthProfiles[b.AuthProfile]; !ok { return fmt.Errorf("unknown auth_profile %q", b.AuthProfile) }
+	if !validDigest(b.AuthPolicyDigest) { return errors.New("auth_policy_digest must be sha256:<64 hex chars>") }
+	if (b.RateProfile == "") != (b.RatePolicyCode == "") { return errors.New("rate_profile and rate_policy_code must be supplied together") }
+	if b.Revision == 0 { return errors.New("revision must be non-zero") }
 	return nil
 }
 
+func (b Binding) Digest() (string, error) {
+	if err := b.Validate(); err != nil { return "", err }
+	payload, err := json.Marshal(b)
+	if err != nil { return "", err }
+	return digestBytes(payload), nil
+}
+
+// RedisKey is the mutable control-plane alias for the current binding at this
+// tenant/service/route scope. Durable execution records must freeze Digest().
 func (b Binding) RedisKey() (string, error) {
 	if err := b.Validate(); err != nil { return "", err }
 	parts := []string{b.OrgID, "fatline", "auth", "binding"}
@@ -206,19 +171,34 @@ func (b Binding) RedisKey() (string, error) {
 	return strings.Join(parts, ":"), nil
 }
 
+func (b Binding) ArtifactRedisKey() (string, error) {
+	digest, err := b.Digest()
+	if err != nil { return "", err }
+	return b.OrgID + ":fatline:auth:binding-artifact:" + strings.TrimPrefix(digest, "sha256:"), nil
+}
+
 func PolicyRedisKey(orgID, digest string) (string, error) {
 	if err := validateSegment(orgID); err != nil { return "", err }
-	if !strings.HasPrefix(digest, "sha256:") { return "", errors.New("policy digest requires sha256 prefix") }
+	if !validDigest(digest) { return "", errors.New("invalid policy digest") }
 	return orgID + ":fatline:auth:policy:" + strings.TrimPrefix(digest, "sha256:"), nil
 }
 
 func RuntimeKey(orgID, family, tenantID string, identity ...string) (string, error) {
 	parts := []string{orgID, "fatline", "runtime", family, tenantID}
 	parts = append(parts, identity...)
-	for _, part := range parts {
-		if err := validateSegment(part); err != nil { return "", err }
-	}
+	for _, part := range parts { if err := validateSegment(part); err != nil { return "", err } }
 	return strings.Join(parts, ":"), nil
+}
+
+func digestBytes(payload []byte) string {
+	sum := sha256.Sum256(payload)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func validDigest(value string) bool {
+	if !strings.HasPrefix(value, "sha256:") || len(value) != len("sha256:")+64 { return false }
+	_, err := hex.DecodeString(strings.TrimPrefix(value, "sha256:"))
+	return err == nil
 }
 
 func validateSegment(value string) error {
