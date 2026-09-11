@@ -115,8 +115,16 @@ func TestBindingRejectsNonCanonicalRateCodeAndDigest(t *testing.T) {
 		RatePolicyCode:   "not-a-number",
 		Revision:         1,
 	}
-	if err := binding.Validate(); err == nil {
-		t.Fatal("invalid rate policy code unexpectedly accepted")
+	for _, code := range []string{"not-a-number", "+1", "01", "18446744073709551616"} {
+		binding.RatePolicyCode = code
+		if err := binding.Validate(); err == nil {
+			t.Fatalf("non-canonical rate policy code %q unexpectedly accepted", code)
+		}
+	}
+
+	binding.RatePolicyCode = "18446744073709551615"
+	if err := binding.Validate(); err != nil {
+		t.Fatalf("max uint64 rate policy code rejected: %v", err)
 	}
 
 	binding.RatePolicyCode = "1"
