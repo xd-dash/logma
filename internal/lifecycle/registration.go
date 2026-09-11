@@ -12,11 +12,13 @@ import (
 	"time"
 
 	ratelimiter "github.com/dash-xd/ratelimiter"
+	"github.com/xd-dash/logma/fatline"
 )
 
 // Registration is durable lifecycle intent. Redis may cache the active timer,
-// but this record preserves the original activation time and encoded policy so
-// a reboot can reconstruct the same absolute deadline instead of extending it.
+// but this record preserves the original activation time, exact compiled
+// Fatline binding, and encoded rate policy so a reboot reconstructs the same
+// authority rather than resolving mutable org aliases.
 type Registration struct {
 	DeploymentID    string                          `json:"deployment_id"`
 	PolicyCode      string                          `json:"policy_code"`
@@ -24,6 +26,7 @@ type Registration struct {
 	ActivatedAt     time.Time                       `json:"activated_at"`
 	Deadline        time.Time                       `json:"deadline"`
 	ShutdownChannel string                          `json:"shutdown_channel"`
+	Binding         *fatline.Binding                `json:"binding,omitempty"`
 	Metadata        map[string]string               `json:"metadata,omitempty"`
 }
 
@@ -33,6 +36,7 @@ type RegisterRequest struct {
 	PolicyName      ratelimiter.LifecyclePolicyName `json:"policy_name,omitempty"`
 	ActivatedAt     *time.Time                      `json:"activated_at,omitempty"`
 	ShutdownChannel string                          `json:"shutdown_channel"`
+	Binding         *fatline.Binding                `json:"binding,omitempty"`
 	Metadata        map[string]string               `json:"metadata,omitempty"`
 }
 
@@ -46,10 +50,18 @@ func NewRegistration(req RegisterRequest, now time.Time) (Registration, error) {
 	if strings.TrimSpace(req.ShutdownChannel) == "" {
 		return Registration{}, errors.New("shutdown_channel is required")
 	}
+	if req.Binding != nil {
+		if err := req.Binding.Validate(); err != nil {
+			return Registration{}, fmt.Errorf("validate binding: %w", err)
+		}
+	}
 
 	code, err := policyCodeForRequest(req)
 	if err != nil {
 		return Registration{}, err
+	}
+	if req.Binding != nil && req.Binding.RatePolicyCode != "" && req.Binding.RatePolicyCode != strconv.FormatUint(uint64(code), 10) {
+		return Registration{}, errors.New("binding rate_policy_code does not match lifecycle policy_code")
 	}
 
 	activated := now.UTC()
@@ -68,6 +80,7 @@ func NewRegistration(req RegisterRequest, now time.Time) (Registration, error) {
 		ActivatedAt:     activated,
 		Deadline:        deadline,
 		ShutdownChannel: req.ShutdownChannel,
+		Binding:         cloneBinding(req.Binding),
 		Metadata:        cloneMetadata(req.Metadata),
 	}, nil
 }
@@ -102,6 +115,14 @@ func (r Registration) Validate() error {
 	if r.DeploymentID == "" || r.PolicyCode == "" || r.ShutdownChannel == "" {
 		return errors.New("registration is incomplete")
 	}
+	if r.Binding != nil {
+		if err := r.Binding.Validate(); err != nil {
+			return fmt.Errorf("validate stored binding: %w", err)
+		}
+		if r.Binding.RatePolicyCode != "" && r.Binding.RatePolicyCode != r.PolicyCode {
+			return errors.New("stored binding rate_policy_code does not match lifecycle policy_code")
+		}
+	}
 	raw, err := strconv.ParseUint(r.PolicyCode, 10, 64)
 	if err != nil {
 		return fmt.Errorf("parse stored policy_code: %w", err)
@@ -131,6 +152,9 @@ func (r Registration) MatchesRequest(req RegisterRequest) (bool, error) {
 		return false, nil
 	}
 	if req.ActivatedAt != nil && !req.ActivatedAt.UTC().Equal(r.ActivatedAt) {
+		return false, nil
+	}
+	if !reflect.DeepEqual(cloneBinding(req.Binding), cloneBinding(r.Binding)) {
 		return false, nil
 	}
 	return reflect.DeepEqual(cloneMetadata(req.Metadata), cloneMetadata(r.Metadata)), nil
@@ -244,6 +268,14 @@ func (s FileStore) Delete(deploymentID string) error {
 
 func (s FileStore) path(deploymentID string) string {
 	return filepath.Join(s.Dir, deploymentID+".json")
+}
+
+func cloneBinding(in *fatline.Binding) *fatline.Binding {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
 }
 
 func cloneMetadata(in map[string]string) map[string]string {
