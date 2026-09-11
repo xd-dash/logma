@@ -271,7 +271,9 @@ func (s FileStore) path(deploymentID string) string {
 }
 
 func cloneBinding(in *fatline.Binding) *fatline.Binding {
-	if in == nil { return nil }
+	if in == nil {
+		return nil
+	}
 	out := *in
 	return &out
 }
