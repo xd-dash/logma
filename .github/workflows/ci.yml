@@ -26,9 +26,12 @@ jobs:
           git diff --exit-code -- go.mod go.sum
 
       - name: Check formatting
+        shell: bash
         run: |
-          diff="$(gofmt -d .)"
-          if [ -n "$diff" ]; then
+          set -euo pipefail
+          mapfile -t go_files < <(find . -type f -name '*.go' -not -path './.git/*' -print)
+          diff="$(gofmt -d "${go_files[@]}")"
+          if [[ -n "$diff" ]]; then
             printf 'gofmt diff:\n%s\n' "$diff"
             exit 1
           fi
