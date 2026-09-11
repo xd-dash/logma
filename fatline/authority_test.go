@@ -1,6 +1,9 @@
 package fatline
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestAuthPolicyDigestNormalizesSets(t *testing.T) {
 	left := AuthPolicy{
@@ -107,12 +110,18 @@ func TestBindingRejectsNonCanonicalRateCodeAndDigest(t *testing.T) {
 		OrgID:            "xd-dash",
 		TenantID:         "smoke",
 		AuthProfile:      "minimal-v1",
-		AuthPolicyDigest: "sha256:" + "a"*64,
+		AuthPolicyDigest: "sha256:" + strings.Repeat("a", 64),
 		RateProfile:      "lifecycle",
 		RatePolicyCode:   "not-a-number",
 		Revision:         1,
 	}
 	if err := binding.Validate(); err == nil {
 		t.Fatal("invalid rate policy code unexpectedly accepted")
+	}
+
+	binding.RatePolicyCode = "1"
+	binding.AuthPolicyDigest = "sha256:" + strings.Repeat("A", 64)
+	if err := binding.Validate(); err == nil {
+		t.Fatal("non-canonical uppercase digest unexpectedly accepted")
 	}
 }
