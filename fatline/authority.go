@@ -232,8 +232,12 @@ func (b Binding) Validate() error {
 		return errors.New("rate_profile and rate_policy_code must be supplied together")
 	}
 	if b.RatePolicyCode != "" {
-		if _, err := strconv.ParseUint(b.RatePolicyCode, 10, 64); err != nil {
-			return fmt.Errorf("rate_policy_code must be uint64 decimal text: %w", err)
+		raw, err := strconv.ParseUint(b.RatePolicyCode, 10, 64)
+		if err != nil {
+			return fmt.Errorf("rate_policy_code must be canonical uint64 decimal text: %w", err)
+		}
+		if strconv.FormatUint(raw, 10) != b.RatePolicyCode {
+			return errors.New("rate_policy_code must be canonical uint64 decimal text")
 		}
 	}
 	if b.Revision == 0 {
