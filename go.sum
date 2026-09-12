@@ -7,7 +7,7 @@ github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XL
 github.com/dash-xd/ratelimiter v0.0.0-20260912061113-e7d596b9a1b1 h1:rOYhDjoDD0Mwlm5Gngq7EkKHC6Usg+0e3YV1IjTx/cU=
 github.com/dash-xd/ratelimiter v0.0.0-20260912061113-e7d596b9a1b1/go.mod h1:PFWWQ8HPltibcdpDzoCtEaMKIwS2UXFKkcxt9AAfQT4=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
-github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihND0mEev00jJYCxPNVRVXFQeu1XKlok6oO0=
+github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/go-chi/chi/v5 v5.3.2 h1:5YQkICvTCSZ25hoRsyJazN0scjzKGiu4VAUc7H1o1nY=
 github.com/go-chi/chi/v5 v5.3.2/go.mod h1:R+tYY2hNuVUUjxoPtqUdgBqevM9s9njzkTLutVsOCto=
 github.com/klauspost/cpuid/v2 v2.2.10 h1:tBs3QSyvjDyFTq3uoc/9xFpCuOsJQFNPiAhYdw2skhE=
