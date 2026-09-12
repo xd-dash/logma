@@ -14,6 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
@@ -26,10 +28,23 @@ jobs:
           git diff --exit-code -- go.mod go.sum
 
       - name: Check formatting
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          diff="$(gofmt -d .)"
-          if [ -n "$diff" ]; then
-            printf 'gofmt diff:\n%s\n' "$diff"
+          set -euo pipefail
+          base="${BASE_SHA:-}"
+          if [[ -z "$base" ]]; then
+            base="$(git rev-parse HEAD^)"
+          fi
+          mapfile -t go_files < <(git diff --name-only --diff-filter=ACMRT "$base" HEAD -- '*.go')
+          if (( ${#go_files[@]} == 0 )); then
+            exit 0
+          fi
+          mapfile -t unformatted < <(gofmt -l "${go_files[@]}")
+          if (( ${#unformatted[@]} != 0 )); then
+            printf 'gofmt required:\n'
+            printf '  %s\n' "${unformatted[@]}"
             exit 1
           fi
 

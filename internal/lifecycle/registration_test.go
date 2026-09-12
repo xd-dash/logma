@@ -3,10 +3,13 @@ package lifecycle
 import (
 	"errors"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
 	ratelimiter "github.com/dash-xd/ratelimiter"
+	"github.com/xd-dash/logma/fatline"
+	"github.com/xd-dash/prajapati/authz"
 )
 
 func TestNamedPolicyRegistrationPersistsAbsoluteDeadline(t *testing.T) {
@@ -147,4 +150,83 @@ func TestExistingRegistrationRetryCannotRebaseActivation(t *testing.T) {
 	if matches {
 		t.Fatal("retry with changed activation unexpectedly matched")
 	}
+}
+
+func TestLifecycleBindingIsFrozenAndMustMatchRatePolicy(t *testing.T) {
+	activated := time.Date(2026, 9, 10, 18, 0, 0, 0, time.UTC)
+	policy, err := ratelimiter.NamedLifecyclePolicy(ratelimiter.LifecycleSmoke10M)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := ratelimiter.EncodePolicy(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := (authz.Policy{Version: 1, Actions: []string{"invoke"}, Resources: []string{"webhook"}}).Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := &fatline.Binding{
+		OrgID:            "xd-dash",
+		TenantID:         "smoke",
+		ServiceID:        "runner",
+		AuthProfile:      "capability-v1",
+		AuthPolicyDigest: digest,
+		RateProfile:      "lifecycle",
+		RatePolicyCode:   ratelimiterCodeString(code),
+		Revision:         3,
+	}
+	reg, err := NewRegistration(RegisterRequest{
+		DeploymentID:    "bound",
+		PolicyCode:      binding.RatePolicyCode,
+		ActivatedAt:     &activated,
+		ShutdownChannel: "shutdown",
+		Binding:         binding,
+	}, activated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reg.Binding == binding {
+		t.Fatal("registration retained caller binding pointer")
+	}
+
+	matches, err := reg.MatchesRequest(RegisterRequest{
+		DeploymentID:    reg.DeploymentID,
+		PolicyCode:      reg.PolicyCode,
+		ShutdownChannel: reg.ShutdownChannel,
+		Binding:         binding,
+	})
+	if err != nil || !matches {
+		t.Fatalf("same binding retry = %v, %v", matches, err)
+	}
+
+	changed := *binding
+	changed.Revision++
+	matches, err = reg.MatchesRequest(RegisterRequest{
+		DeploymentID:    reg.DeploymentID,
+		PolicyCode:      reg.PolicyCode,
+		ShutdownChannel: reg.ShutdownChannel,
+		Binding:         &changed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if matches {
+		t.Fatal("changed binding revision unexpectedly matched")
+	}
+
+	wrong := *binding
+	wrong.RatePolicyCode = "1"
+	if _, err := NewRegistration(RegisterRequest{
+		DeploymentID:    "wrong-rate",
+		PolicyCode:      binding.RatePolicyCode,
+		ShutdownChannel: "shutdown",
+		Binding:         &wrong,
+	}, activated); err == nil {
+		t.Fatal("mismatched binding rate policy unexpectedly accepted")
+	}
+}
+
+func ratelimiterCodeString(code ratelimiter.PolicyCode) string {
+	return strconv.FormatUint(uint64(code), 10)
 }
