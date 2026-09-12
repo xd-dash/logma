@@ -3,9 +3,10 @@ module github.com/xd-dash/logma
 go 1.26
 
 require (
-	github.com/dash-xd/ratelimiter v0.0.0-20260901065541-f9dd9465d98b
+	github.com/dash-xd/ratelimiter v0.0.0-20260912061113-e7d596b9a1b1
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/redis/go-redis/v9 v9.22.0
+	github.com/xd-dash/prajapati v0.0.0-20260912060948-d6fc6bef7997
 )
 
 require (
