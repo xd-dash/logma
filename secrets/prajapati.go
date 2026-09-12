@@ -64,8 +64,13 @@ func NewArtifact(secretID string, revision uint64, keyID string, ciphertext []by
 }
 
 type Client struct {
-	BaseURL    string
-	HTTPClient *http.Client
+	BaseURL string
+
+	// BindingDigest, when set, is the exact frozen Fatline binding expected by
+	// this runtime. Artifacts from another authority snapshot are rejected before
+	// any plaintext request is sent to Prajapati.
+	BindingDigest string
+	HTTPClient    *http.Client
 }
 
 type decryptRequest struct {
@@ -83,6 +88,9 @@ func (c Client) Decrypt(ctx context.Context, artifact Artifact, credential strin
 	ciphertext, err := artifact.CiphertextBytes()
 	if err != nil {
 		return nil, err
+	}
+	if c.BindingDigest != "" && artifact.BindingDigest != c.BindingDigest {
+		return nil, fmt.Errorf("secret artifact binding digest mismatch: got %q want %q", artifact.BindingDigest, c.BindingDigest)
 	}
 	if strings.TrimSpace(c.BaseURL) == "" || strings.TrimSpace(credential) == "" {
 		return nil, errors.New("Prajapati base URL and credential are required")
