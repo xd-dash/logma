@@ -9,6 +9,7 @@ import (
 
 	ratelimiter "github.com/dash-xd/ratelimiter"
 	"github.com/xd-dash/logma/fatline"
+	"github.com/xd-dash/prajapati/authz"
 )
 
 func TestNamedPolicyRegistrationPersistsAbsoluteDeadline(t *testing.T) {
@@ -161,7 +162,7 @@ func TestLifecycleBindingIsFrozenAndMustMatchRatePolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	digest, err := (fatline.AuthPolicy{Version: 1, Actions: []string{"invoke"}, Resources: []string{"webhook"}}).Digest()
+	digest, err := (authz.Policy{Version: 1, Actions: []string{"invoke"}, Resources: []string{"webhook"}}).Digest()
 	if err != nil {
 		t.Fatal(err)
 	}
