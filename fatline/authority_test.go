@@ -3,15 +3,17 @@ package fatline
 import (
 	"strings"
 	"testing"
+
+	"github.com/xd-dash/prajapati/authz"
 )
 
 func TestAuthPolicyDigestNormalizesSets(t *testing.T) {
-	left := AuthPolicy{
+	left := authz.Policy{
 		Version:   1,
 		Actions:   []string{"deploy", "read"},
 		Resources: []string{"xd-dash/smoke"},
 	}
-	right := AuthPolicy{
+	right := authz.Policy{
 		Version:   1,
 		Actions:   []string{"read", "deploy", "read"},
 		Resources: []string{"xd-dash/smoke"},
@@ -30,13 +32,13 @@ func TestAuthPolicyDigestNormalizesSets(t *testing.T) {
 }
 
 func TestAuthPolicyAllowsOnlyNarrowing(t *testing.T) {
-	parent := AuthPolicy{
+	parent := authz.Policy{
 		Version:   1,
 		Actions:   []string{"read", "deploy"},
 		Resources: []string{"xd-dash/smoke", "xd-dash/logma"},
 		Audiences: []string{"fatline"},
 	}
-	child := AuthPolicy{
+	child := authz.Policy{
 		Version:       1,
 		Actions:       []string{"deploy"},
 		Resources:     []string{"xd-dash/smoke"},
@@ -53,13 +55,13 @@ func TestAuthPolicyAllowsOnlyNarrowing(t *testing.T) {
 }
 
 func TestAuthPolicyCannotRemoveParentExpiryRequirement(t *testing.T) {
-	parent := AuthPolicy{
+	parent := authz.Policy{
 		Version:       1,
 		Actions:       []string{"invoke"},
 		Resources:     []string{"webhook"},
 		RequireExpiry: true,
 	}
-	child := AuthPolicy{
+	child := authz.Policy{
 		Version:   1,
 		Actions:   []string{"invoke"},
 		Resources: []string{"webhook"},
@@ -70,7 +72,7 @@ func TestAuthPolicyCannotRemoveParentExpiryRequirement(t *testing.T) {
 }
 
 func TestBindingKeyIsOrgScoped(t *testing.T) {
-	policy := AuthPolicy{
+	policy := authz.Policy{
 		Version:   1,
 		Actions:   []string{"invoke"},
 		Resources: []string{"webhook"},
@@ -87,6 +89,7 @@ func TestBindingKeyIsOrgScoped(t *testing.T) {
 		AuthPolicyDigest: digest,
 		RateProfile:      "lifecycle",
 		RatePolicyCode:   "2305843009213693952",
+		RedisACLProfile:  "publisher",
 		Revision:         1,
 	}
 	key, err := binding.RedisKey()
