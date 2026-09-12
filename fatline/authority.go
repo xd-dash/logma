@@ -6,165 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/xd-dash/prajapati/authz"
 )
 
-type AuthCapability uint32
-
-const (
-	AuthCapabilityPrincipal AuthCapability = 1 << iota
-	AuthCapabilityClaims
-	AuthCapabilityRoles
-	AuthCapabilityResource
-	AuthCapabilityDelegation
-	AuthCapabilityExpiry
-	AuthCapabilityAudience
-	AuthCapabilityNetwork
-)
-
-type AuthProfile struct {
-	ID           string         `json:"id"`
-	Capabilities AuthCapability `json:"capabilities"`
-}
-
-var authProfiles = map[string]AuthProfile{
-	"minimal-v1": {
-		ID:           "minimal-v1",
-		Capabilities: AuthCapabilityPrincipal | AuthCapabilityResource,
-	},
-	"jwt-v1": {
-		ID:           "jwt-v1",
-		Capabilities: AuthCapabilityPrincipal | AuthCapabilityClaims | AuthCapabilityExpiry | AuthCapabilityAudience | AuthCapabilityResource,
-	},
-	"claims-v1": {
-		ID:           "claims-v1",
-		Capabilities: AuthCapabilityPrincipal | AuthCapabilityClaims | AuthCapabilityRoles | AuthCapabilityExpiry | AuthCapabilityAudience | AuthCapabilityResource,
-	},
-	"capability-v1": {
-		ID:           "capability-v1",
-		Capabilities: AuthCapabilityPrincipal | AuthCapabilityResource | AuthCapabilityDelegation | AuthCapabilityExpiry | AuthCapabilityAudience,
-	},
-	"delegated-v1": {
-		ID:           "delegated-v1",
-		Capabilities: AuthCapabilityPrincipal | AuthCapabilityClaims | AuthCapabilityRoles | AuthCapabilityResource | AuthCapabilityDelegation | AuthCapabilityExpiry | AuthCapabilityAudience | AuthCapabilityNetwork,
-	},
-}
-
-func AuthProfileFor(id string) (AuthProfile, bool) {
-	profile, ok := authProfiles[id]
-	return profile, ok
-}
-
-type AuthPolicy struct {
-	Version       uint8               `json:"version"`
-	Actions       []string            `json:"actions,omitempty"`
-	Resources     []string            `json:"resources,omitempty"`
-	Audiences     []string            `json:"audiences,omitempty"`
-	Roles         []string            `json:"roles,omitempty"`
-	Claims        map[string][]string `json:"claims,omitempty"`
-	Delegation    bool                `json:"delegation,omitempty"`
-	RequireExpiry bool                `json:"require_expiry,omitempty"`
-	Networks      []string            `json:"networks,omitempty"`
-}
-
-func (p AuthPolicy) Normalize() AuthPolicy {
-	p.Actions = normalizeSet(p.Actions)
-	p.Resources = normalizeSet(p.Resources)
-	p.Audiences = normalizeSet(p.Audiences)
-	p.Roles = normalizeSet(p.Roles)
-	p.Networks = normalizeSet(p.Networks)
-	if len(p.Claims) != 0 {
-		claims := make(map[string][]string, len(p.Claims))
-		for key, values := range p.Claims {
-			claims[key] = normalizeSet(values)
-		}
-		p.Claims = claims
-	}
-	return p
-}
-
-func (p AuthPolicy) RequiredCapabilities() AuthCapability {
-	var required AuthCapability
-	if len(p.Resources) != 0 || len(p.Actions) != 0 {
-		required |= AuthCapabilityResource
-	}
-	if len(p.Claims) != 0 {
-		required |= AuthCapabilityClaims
-	}
-	if len(p.Roles) != 0 {
-		required |= AuthCapabilityRoles
-	}
-	if len(p.Audiences) != 0 {
-		required |= AuthCapabilityAudience
-	}
-	if p.Delegation {
-		required |= AuthCapabilityDelegation
-	}
-	if p.RequireExpiry {
-		required |= AuthCapabilityExpiry
-	}
-	if len(p.Networks) != 0 {
-		required |= AuthCapabilityNetwork
-	}
-	return required
-}
-
-func (p AuthPolicy) Validate(profile AuthProfile) error {
-	if p.Version != 1 {
-		return fmt.Errorf("unsupported auth policy version %d", p.Version)
-	}
-	known, ok := AuthProfileFor(profile.ID)
-	if !ok || known.Capabilities != profile.Capabilities {
-		return fmt.Errorf("unknown auth profile %q", profile.ID)
-	}
-	if required := p.RequiredCapabilities(); required&^profile.Capabilities != 0 {
-		return fmt.Errorf("auth profile %q lacks capabilities %#x", profile.ID, required&^profile.Capabilities)
-	}
-	return nil
-}
-
-func (p AuthPolicy) Digest() (string, error) {
-	payload, err := json.Marshal(p.Normalize())
-	if err != nil {
-		return "", err
-	}
-	return digestBytes(payload), nil
-}
-
-// Allows enforces monotonic narrowing. Set-valued fields are explicit allow
-// sets: empty means no authority on that axis, never wildcard authority.
-func (p AuthPolicy) Allows(child AuthPolicy) error {
-	parent := p.Normalize()
-	child = child.Normalize()
-	for name, pair := range map[string][2][]string{
-		"actions":   {parent.Actions, child.Actions},
-		"resources": {parent.Resources, child.Resources},
-		"audiences": {parent.Audiences, child.Audiences},
-		"roles":     {parent.Roles, child.Roles},
-		"networks":  {parent.Networks, child.Networks},
-	} {
-		if !subset(pair[1], pair[0]) {
-			return fmt.Errorf("child %s exceed parent authority", name)
-		}
-	}
-	if child.Delegation && !parent.Delegation {
-		return errors.New("child delegation exceeds parent authority")
-	}
-	if parent.RequireExpiry && !child.RequireExpiry {
-		return errors.New("child removes required expiry")
-	}
-	for key, values := range child.Claims {
-		parentValues, ok := parent.Claims[key]
-		if !ok || !subset(values, parentValues) {
-			return fmt.Errorf("child claim %q exceeds parent authority", key)
-		}
-	}
-	return nil
-}
-
+// OrgGrant and Binding remain Logma/Fatline control-plane artifacts. Generic
+// authorization semantics live in Prajapati's public authz package.
 type OrgGrant struct {
 	OrgID        string `json:"org_id"`
 	Name         string `json:"name"`
@@ -197,6 +47,7 @@ type Binding struct {
 	AuthPolicyDigest string `json:"auth_policy_digest"`
 	RateProfile      string `json:"rate_profile,omitempty"`
 	RatePolicyCode   string `json:"rate_policy_code,omitempty"`
+	RedisACLProfile  string `json:"redis_acl_profile,omitempty"`
 	Revision         uint64 `json:"revision"`
 }
 
@@ -222,7 +73,7 @@ func (b Binding) Validate() error {
 			return fmt.Errorf("route_id: %w", err)
 		}
 	}
-	if _, ok := AuthProfileFor(b.AuthProfile); !ok {
+	if _, ok := authz.ProfileFor(b.AuthProfile); !ok {
 		return fmt.Errorf("unknown auth_profile %q", b.AuthProfile)
 	}
 	if !validDigest(b.AuthPolicyDigest) {
@@ -238,6 +89,11 @@ func (b Binding) Validate() error {
 		}
 		if strconv.FormatUint(raw, 10) != b.RatePolicyCode {
 			return errors.New("rate_policy_code must be canonical uint64 decimal text")
+		}
+	}
+	if b.RedisACLProfile != "" {
+		if err := validateSegment(b.RedisACLProfile); err != nil {
+			return fmt.Errorf("redis_acl_profile: %w", err)
 		}
 	}
 	if b.Revision == 0 {
@@ -329,37 +185,4 @@ func validateSegment(value string) error {
 		return errors.New("keyspace segment contains reserved Redis syntax or whitespace")
 	}
 	return nil
-}
-
-func normalizeSet(values []string) []string {
-	if len(values) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(values))
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func subset(child, parent []string) bool {
-	allowed := make(map[string]struct{}, len(parent))
-	for _, value := range parent {
-		allowed[value] = struct{}{}
-	}
-	for _, value := range child {
-		if _, ok := allowed[value]; !ok {
-			return false
-		}
-	}
-	return true
 }
