@@ -1,33 +1,52 @@
 # Fatline authority bindings
 
-Logma currently houses the provider-neutral Go contract for compiled Fatline authority bindings because Logma is the durable lifecycle owner in the current composition. This does not make Logma the owner of organization business policy; it persists and validates the compiled result handed to runtime/deployment ownership.
+Logma owns the durable Fatline binding registry, mutable aliases, immutable binding artifacts, lifecycle attachment, and event propagation. It does **not** own generic identity/authz semantics and it does not make Redis ACL usernames into global principals.
 
-The hierarchy is:
+The current hierarchy is:
 
 ```text
-organization business/security authority
+organization / Huram business-security authority
         |
-        v
-      OrgGrant
+        +-- Prajapati authz.Policy + authz.Profile
+        |       immutable policy digest
         |
-        v
-   AuthPolicy (immutable digest)
+        +-- ratelimiter PolicyBinding
+        |       rate/lifecycle execution policy
         |
-        +-- AuthProfile (execution capability shape)
-        |
-        `-- ratelimiter profile + PolicyCode
+        `-- ratelimiter/redisacl profile
+                local Redis execution shape only
                          |
                          v
-                      Binding
+                    Logma Binding
 ```
 
-A child authorization policy may only narrow its parent policy. `AuthPolicy.Allows` enforces subset semantics over actions, resources, audiences, roles, claim values, delegation, expiry requirements, and network scopes.
+Prajapati's public `authz` package owns provider-neutral authorization semantics and monotonic parent -> child narrowing. Logma stores the resulting `auth_profile` and `auth_policy_digest` in its compiled `Binding`; it does not reinterpret the policy language.
 
-Profiles describe enforcement capability only. They are not product tiers or roles. Supported v1 profile identifiers are `minimal-v1`, `jwt-v1`, `claims-v1`, `capability-v1`, and `delegated-v1`.
+Ratelimiter continues to own machine rate/lifecycle policy and profile capability validation. `redis_acl_profile`, when present, selects a local Redis execution shape that Logma can compile through `ratelimiter/redisacl`. The generated username/password/rules are process-local enforcement material, not the distributed caller identity.
+
+A typical runtime therefore looks like:
+
+```text
+ed25519:logma/world-17
+        |
+        v
+     Prajapati
+ principal + audience + action + resource
+        |
+        v
+      Logma
+ exact frozen Binding
+        |
+        +-- rate/lifecycle policy
+        |
+        `-- local Redis ACL execution identity
+```
+
+Marai is separate: it retains its fixed `marai-app` / `marai-admin` ACL split and does not use Logma's tenant Redis ACL compiler.
 
 ## Redis grammar
 
-Control-plane policy data and runtime state are separate:
+Control-plane policy data and runtime state remain separate:
 
 ```text
 <org>:fatline:auth:policy:<sha256>
@@ -50,3 +69,7 @@ Ratelimiter `PolicyCode` is encoded as decimal text inside cross-language bindin
 When a binding contains a ratelimiter policy, its `rate_policy_code` must exactly equal the lifecycle registration's canonical `policy_code`. Retry matching compares the exact binding snapshot, preventing a repeated handoff from silently changing org/tenant/service authority.
 
 The lifecycle owner persists the compiled contract; it does not recompile organization business rules on restart.
+
+## HTTP authentication compatibility
+
+The older Logma ACL-auth experiment allowed HTTP Basic credentials backed directly by Redis ACL users. That remains useful as a development/compatibility mode, but it is not the intended Fatline identity architecture. The intended path is external credential -> Prajapati normalized principal/authz -> Logma operation -> constrained local Redis execution identity.
