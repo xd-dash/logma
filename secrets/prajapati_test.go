@@ -16,7 +16,8 @@ import (
 
 func TestArtifactDigestAndPrajapatiDecrypt(t *testing.T) {
 	ciphertext := []byte("wrapped-secret")
-	artifact := NewArtifact("axiom-token", 8, "axiom-token", ciphertext, "sha256:"+strings.Repeat("a", 64))
+	bindingDigest := "sha256:" + strings.Repeat("a", 64)
+	artifact := NewArtifact("axiom-token", 8, "axiom-token", ciphertext, bindingDigest)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/keys/axiom-token/decrypt" {
@@ -42,12 +43,18 @@ func TestArtifactDigestAndPrajapatiDecrypt(t *testing.T) {
 	}))
 	defer server.Close()
 
-	plaintext, err := (Client{BaseURL: server.URL, HTTPClient: server.Client()}).Decrypt(context.Background(), artifact, "AT1.test")
+	client := Client{BaseURL: server.URL, BindingDigest: bindingDigest, HTTPClient: server.Client()}
+	plaintext, err := client.Decrypt(context.Background(), artifact, "AT1.test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(plaintext) != "axiom-plaintext" {
 		t.Fatalf("plaintext=%q", plaintext)
+	}
+
+	client.BindingDigest = "sha256:" + strings.Repeat("d", 64)
+	if _, err := client.Decrypt(context.Background(), artifact, "AT1.test"); err == nil {
+		t.Fatal("expected mismatched Fatline binding digest to be rejected")
 	}
 }
 
