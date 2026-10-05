@@ -21,7 +21,7 @@ func TestLogmaLifecycleRequirements(t *testing.T) {
 		if len(req.KeyPatterns) != 0 || !reflect.DeepEqual(req.ChannelPatterns, []string{"&probot-test:logma:lifecycle:*"}) {
 			t.Fatalf("unexpected lifecycle authority: %+v", req)
 		}
-		want := []string{"ping", "hello", "client"}
+		want := []string{"ping", "hello", "client", "select"}
 		if access&AccessPublish != 0 {
 			want = append(want, "publish")
 		}
@@ -70,7 +70,7 @@ func TestLogmaLifecycleACL(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = admin.Do(context.Background(), "ACL", "DELUSER", user).Err() })
-		client := redis.NewClient(&redis.Options{Addr: addr, Username: user, Password: password})
+		client := redis.NewClient(&redis.Options{Addr: addr, Username: user, Password: password, DB: 5})
 		t.Cleanup(func() { _ = client.Close() })
 		return client
 	}

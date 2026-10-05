@@ -14,7 +14,7 @@ func logmaLifecycleRequirements(scope Scope, access Access) (RedisRequirements, 
 	}
 	req := RedisRequirements{
 		ChannelPatterns: []string{family.ChannelPattern()},
-		Commands:        baseRedisCommands(),
+		Commands:        append(baseRedisCommands(), "select"),
 	}
 	if access&AccessPublish != 0 {
 		req.Commands = append(req.Commands, "publish")
