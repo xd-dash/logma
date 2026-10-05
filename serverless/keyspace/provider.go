@@ -19,6 +19,7 @@ type Capability string
 
 const (
 	CapabilityLogmaPubSubGraph     Capability = "logma.pubsub.graph"
+	CapabilityLogmaLifecycle       Capability = "logma.lifecycle"
 	CapabilityLogmaPubSubTransport Capability = "logma.pubsub.transport"
 )
 
@@ -48,6 +49,8 @@ func CompileRedisRequirements(scope Scope, grants ...Grant) (RedisRequirements, 
 		var req RedisRequirements
 		var err error
 		switch grant.Capability {
+		case CapabilityLogmaLifecycle:
+			req, err = logmaLifecycleRequirements(scope, grant.Access)
 		case CapabilityLogmaPubSubGraph:
 			req, err = logmaPubSubGraphRequirements(scope, grant.Access)
 		case CapabilityLogmaPubSubTransport:
