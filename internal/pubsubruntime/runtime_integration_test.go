@@ -216,8 +216,11 @@ func TestRuntimeDeliversPersistedSubscriberWebhooksAgainstRedis(t *testing.T) {
 		t.Fatalf("runtime detach removed persisted Callback: %v", err)
 	}
 
-	if !channelHandle.Close() {
-		t.Fatal("Channel Close did not deactivate listener")
+	if runtime.Active(channelName) {
+		t.Fatal("last Subscriber detach left an idle Channel listener")
+	}
+	if channelHandle.Close() {
+		t.Fatal("stale Channel handle deactivated an already released listener")
 	}
 	select {
 	case <-channelHandle.Stopped():
