@@ -155,13 +155,17 @@ func (rt *Runtime) run() {
 	for _, channel := range rt.defaultChannels {
 		if err := startSubscription(channel); err != nil {
 			log.Printf("failed to subscribe to default channel %q: %v", channel, err)
-			if rt.subscribeOnly { return }
+			if rt.subscribeOnly {
+				return
+			}
 		}
 	}
 	for _, channel := range rt.channels {
 		if err := startSubscription(channel); err != nil {
 			log.Printf("failed to subscribe to requested channel %q: %v", channel, err)
-			if rt.subscribeOnly { return }
+			if rt.subscribeOnly {
+				return
+			}
 		}
 	}
 
