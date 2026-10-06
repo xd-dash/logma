@@ -1,5 +1,7 @@
 # systemd service
 
+This is a native-host installation reference, not a qualified retained Fatline deployment recipe. Select the declared execution class and component-owned composition first. Existing exact retained hosts use their established deployment rail; do not replay this initial installer or broaden Redis ACLs to accommodate an unqualified composition root.
+
 Logma runs as the dedicated unprivileged `logma` user, managed by the system systemd instance. This keeps boot/restart semantics independent of an interactive login session while still preventing the application from running as root.
 
 Production deployments should build the Linux binary in CI and copy the resulting artifact to the server. The server does not need the Go toolchain.

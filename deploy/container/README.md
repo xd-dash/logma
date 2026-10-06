@@ -1,6 +1,8 @@
 # Logma runtime cell
 
-The production-shaped container target lives in `flake.nix`.
+The development/reference container composition lives in `flake.nix`. It is not the qualified retained Probot/Skymill/Fatline composition: its embedded Redis configuration is RAM-only but does not declare the scoped four-principal, 40 MiB/noeviction profile, and `cmd/api` is not a subscribe-only lifecycle composition root.
+
+Application composition changes belong in the owning Nix flake and native Logma runtime/router. Actions builds and qualifies immutable artifacts; the deployment control plane selects their exact placement. Do not copy this cell's Redis administration or add a parallel SSE server to bypass a missing scoped runtime capability. Socket filesystem permission is not Redis capability isolation.
 
 ```text
 public host/network
