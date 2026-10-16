@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/xd-dash/logma/serverless/pubsub"
 )
 
@@ -27,8 +29,9 @@ type subscriptionStopped struct {
 }
 
 type subscription struct {
-	channel string
-	cancel  context.CancelFunc
+	channel    string
+	cancel     context.CancelFunc
+	subscriber *pubsub.Subscriber
 }
 
 type PublishRequest struct {
@@ -47,6 +50,8 @@ type Runtime struct {
 	invocation      pubsub.InvocationInfo
 	channels        []string
 	defaultChannels []string
+	subscribeOnly   bool
+	ready           chan struct{}
 }
 
 func NewRuntime() *Runtime {
@@ -57,6 +62,16 @@ func NewRuntime() *Runtime {
 		events:          make(chan PublishRequest, eventBufferSize),
 		status:          make(chan subscriptionStopped, inputBufferSize),
 		defaultChannels: defaultSubscriptionsFromEnv(),
+	}
+}
+
+// NewSubscriptionRuntime uses an already owned client without control-plane writes or relays.
+func NewSubscriptionRuntime(client *redis.Client, channels []string) *Runtime {
+	return &Runtime{
+		ControlPlane: pubsub.ControlPlane{Client: client}, Session: pubsub.NewSession(),
+		input: make(chan runtimeMessage, inputBufferSize), events: make(chan PublishRequest, eventBufferSize),
+		status: make(chan subscriptionStopped, inputBufferSize), defaultChannels: append([]string(nil), channels...),
+		subscribeOnly: true, ready: make(chan struct{}),
 	}
 }
 
@@ -75,7 +90,7 @@ func defaultSubscriptionsFromEnv() []string {
 
 func (rt *Runtime) RecordInvocation(r *http.Request, requestID string) {
 	rt.invocation = pubsub.InvocationInfoFromRequest(r, requestID)
-	if os.Getenv("REDIS_URI") == "" || os.Getenv("REDISCLI_AUTH") == "" {
+	if !rt.subscribeOnly && (os.Getenv("REDIS_URI") == "" || os.Getenv("REDISCLI_AUTH") == "") {
 		rt.Client = pubsub.NewClientFromRequest(r)
 	}
 }
@@ -96,45 +111,66 @@ func (rt *Runtime) run() {
 		sub.cancel()
 	}
 	defer func() {
-		for channel, sub := range subscriptions {
-			delete(subscriptions, channel)
+		for _, sub := range subscriptions {
 			sub.cancel()
 		}
-	}()
-
-	if err := pubsub.RegisterInvocation(rt.Context(), rt.Client, rt.invocation); err != nil {
-		log.Printf("failed to record invocation info: %v", err)
-	}
-
-	relayCtx, cancelRelays := context.WithCancel(rt.Context())
-	var relays []*pubsub.Subscriber
-	defer func() {
-		cancelRelays()
-		for _, relay := range relays {
-			<-relay.Stopped()
+		for channel, sub := range subscriptions {
+			if sub.subscriber != nil {
+				<-sub.subscriber.Stopped()
+			}
+			delete(subscriptions, channel)
 		}
 	}()
 
-	handlers := make(map[string]Handle, len(Subscriptions))
-	for base, handle := range Subscriptions {
-		instanceChannel := rt.InstanceChannel(base)
-		handlers[instanceChannel] = handle
-		relays = append(relays, rt.Relay(relayCtx, base))
-		if err := startSubscription(instanceChannel); err != nil {
-			log.Printf("failed to initialize %q: %v", instanceChannel, err)
-			return
+	handlers := make(map[string]Handle)
+	if !rt.subscribeOnly {
+		if err := pubsub.RegisterInvocation(rt.Context(), rt.Client, rt.invocation); err != nil {
+			log.Printf("failed to record invocation info: %v", err)
 		}
+
+		relayCtx, cancelRelays := context.WithCancel(rt.Context())
+		var relays []*pubsub.Subscriber
+		defer func() {
+			cancelRelays()
+			for _, relay := range relays {
+				<-relay.Stopped()
+			}
+		}()
+
+		handlers = make(map[string]Handle, len(Subscriptions))
+		for base, handle := range Subscriptions {
+			instanceChannel := rt.InstanceChannel(base)
+			handlers[instanceChannel] = handle
+			if relay := rt.Relay(relayCtx, base); relay != nil {
+				relays = append(relays, relay)
+			}
+			if err := startSubscription(instanceChannel); err != nil {
+				log.Printf("failed to initialize %q: %v", instanceChannel, err)
+				return
+			}
+		}
+
 	}
 
 	for _, channel := range rt.defaultChannels {
 		if err := startSubscription(channel); err != nil {
 			log.Printf("failed to subscribe to default channel %q: %v", channel, err)
+			if rt.subscribeOnly {
+				return
+			}
 		}
 	}
 	for _, channel := range rt.channels {
 		if err := startSubscription(channel); err != nil {
 			log.Printf("failed to subscribe to requested channel %q: %v", channel, err)
+			if rt.subscribeOnly {
+				return
+			}
 		}
+	}
+
+	if rt.subscribeOnly {
+		close(rt.ready)
 	}
 
 	log.Printf("Redis runtime started (instance=%s)", rt.InstanceID)
@@ -203,6 +239,14 @@ func (rt *Runtime) startSubscription(channel string, subscriptions map[string]*s
 		case <-ctx.Done():
 		}
 	})
+	subscriptions[channel].subscriber = sub
+	if rt.subscribeOnly {
+		select {
+		case <-sub.Ready():
+		case <-rt.Context().Done():
+			return rt.Context().Err()
+		}
+	}
 	go func() {
 		<-sub.Stopped()
 		select {

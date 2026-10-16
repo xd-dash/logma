@@ -1,4 +1,4 @@
-// Package keyspace defines the scope-first Redis naming contract used by Fatline workers.
+// Package keyspace defines Fatline scope, resource-address, and Redis ACL contracts.
 package keyspace
 
 import (
@@ -23,6 +23,9 @@ func ParseScope(value string) (Scope, error) {
 	return Scope(value), nil
 }
 
+// FromEnv is retained for compatibility with pre-v2 callers. New v2 resource
+// and security code must parse scope explicitly and fail closed rather than
+// accepting the synthetic "unknown" fallback used here.
 func FromEnv(fallback string) Scope {
 	value := strings.TrimSpace(os.Getenv("FATLINE_SCOPE"))
 	if value == "" {
@@ -35,6 +38,8 @@ func FromEnv(fallback string) Scope {
 	return scope
 }
 
+// clean belongs to the legacy Name/Profile representation. It is deliberately
+// lossy and must not be used to construct canonical v2 resource identities.
 func clean(part string) string {
 	part = strings.TrimSpace(part)
 	part = strings.Trim(part, ":")
@@ -55,7 +60,9 @@ func validCommand(command string) bool {
 	return command != "" && command == strings.ToLower(command) && !strings.ContainsAny(command, "+-@~&%:*?[]{} \t\r\n")
 }
 
-// Name returns <scope>:<subsystem>:<resource...>.
+// Name returns the legacy <scope>:<subsystem>:<resource...> representation.
+// Canonical v2 identities use Family/Resource so opaque identity segments are
+// encoded injectively instead of normalized by clean.
 func (s Scope) Name(subsystem string, resource ...string) string {
 	parts := []string{clean(string(s)), clean(subsystem)}
 	for _, part := range resource {
@@ -66,7 +73,7 @@ func (s Scope) Name(subsystem string, resource ...string) string {
 	return strings.Join(parts, ":")
 }
 
-// Prefix scopes an already-structured logical resource, e.g. news:item:sec.
+// Prefix scopes an already-structured legacy logical resource.
 func (s Scope) Prefix(resource string) string {
 	return clean(string(s)) + ":" + strings.TrimLeft(strings.TrimSpace(resource), ":")
 }
@@ -76,11 +83,11 @@ func (s Scope) ReadPattern() string    { return "%R~" + clean(string(s)) + ":*" 
 func (s Scope) WritePattern() string   { return "%W~" + clean(string(s)) + ":*" }
 func (s Scope) ChannelPattern() string { return "&" + clean(string(s)) + ":*" }
 
-// Worker describes one subsystem-only worker. Prefer Profile for applications
-// that legitimately need several package-owned capabilities (for example News
-// publication plus Logma runtime records plus ratelimiter lifecycle state).
+// Worker and Profile are retained provider-compatibility primitives. New v2
+// capabilities should compile through semantic Grant values and
+// CompileRedisRequirements rather than adding broader hand-authored profiles.
 type Worker struct {
-	Scope      Scope
+	Scope     Scope
 	Subsystem string
 }
 
@@ -95,10 +102,6 @@ func (w Worker) ReadPattern() string    { return "%R~" + w.prefix() }
 func (w Worker) WritePattern() string   { return "%W~" + w.prefix() }
 func (w Worker) ChannelPattern() string { return "&" + w.prefix() }
 
-// Profile is the deployable least-privilege capability set for a Fatline
-// worker. Key, Pub/Sub and command capabilities are all material authority and
-// therefore travel together. Bootstrap-only commands such as FUNCTION LOAD are
-// deliberately excluded from normal runtime profiles.
 type Profile struct {
 	Scope             Scope
 	KeySubsystems     []string
@@ -108,7 +111,9 @@ type Profile struct {
 }
 
 func (p Profile) Validate() error {
-	if _, err := ParseScope(string(p.Scope)); err != nil { return err }
+	if _, err := ParseScope(string(p.Scope)); err != nil {
+		return err
+	}
 	for _, capability := range append(append([]string{}, p.KeySubsystems...), p.ChannelSubsystems...) {
 		if !validCapability(capability) {
 			return fmt.Errorf("invalid worker capability %q", capability)
@@ -127,35 +132,37 @@ func unique(values []string) []string {
 	out := make([]string, 0, len(values))
 	for _, value := range values {
 		value = strings.TrimSpace(value)
-		if _, ok := seen[value]; ok { continue }
+		if _, ok := seen[value]; ok {
+			continue
+		}
 		seen[value] = struct{}{}
 		out = append(out, value)
 	}
 	return out
 }
 
-// ACLPatterns returns resource patterns only. Call ACLRules when materializing
-// a complete runtime ACL so command permissions cannot silently drift from the
-// package-owned worker profile.
 func (p Profile) ACLPatterns() ([]string, error) {
-	if err := p.Validate(); err != nil { return nil, err }
+	if err := p.Validate(); err != nil {
+		return nil, err
+	}
 	patterns := make([]string, 0, len(p.KeySubsystems)+len(p.ChannelSubsystems)+1)
 	for _, subsystem := range unique(p.KeySubsystems) {
-		patterns = append(patterns, Worker{Scope:p.Scope, Subsystem:subsystem}.KeyPattern())
+		patterns = append(patterns, Worker{Scope: p.Scope, Subsystem: subsystem}.KeyPattern())
 	}
 	for _, subsystem := range unique(p.ChannelSubsystems) {
-		patterns = append(patterns, Worker{Scope:p.Scope, Subsystem:subsystem}.ChannelPattern())
+		patterns = append(patterns, Worker{Scope: p.Scope, Subsystem: subsystem}.ChannelPattern())
 	}
-	if p.AllowGlobalRelay { patterns = append(patterns, "&global:*") }
+	if p.AllowGlobalRelay {
+		patterns = append(patterns, "&global:*")
+	}
 	return patterns, nil
 }
 
-// ACLRules returns the resource patterns plus explicit +command grants needed
-// by the runtime profile. It never grants command categories or admin/script
-// authority implicitly.
 func (p Profile) ACLRules() ([]string, error) {
 	patterns, err := p.ACLPatterns()
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	rules := append([]string{}, patterns...)
 	for _, command := range unique(p.Commands) {
 		rules = append(rules, "+"+command)
@@ -163,15 +170,13 @@ func (p Profile) ACLRules() ([]string, error) {
 	return rules, nil
 }
 
-// NewsProfile captures the complete steady-state capabilities required by the
-// current News worker: News publication, Logma invocation/runtime leases and
-// ratelimiter lifecycle Functions. Redis ACLs enforce commands executed from
-// inside FCALL against the caller, so the underlying Function commands are
-// listed explicitly as well as FCALL itself.
+// NewsProfile is the qualified pre-v2 compatibility profile for the current
+// News worker. Do not use it as the template for new v2 resource capability
+// design; semantic capabilities should be added to the provider compiler.
 func NewsProfile(scope Scope) Profile {
 	return Profile{
-		Scope: scope,
-		KeySubsystems: []string{"logma", "ratelimiter"},
+		Scope:             scope,
+		KeySubsystems:     []string{"logma", "ratelimiter"},
 		ChannelSubsystems: []string{"news"},
 		Commands: []string{
 			"ping", "hello", "client",

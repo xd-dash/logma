@@ -41,7 +41,12 @@ func InvocationKeyScoped(scope keyspace.Scope, info InvocationInfo) string {
 	return scope.Name("logma", "invocation", orDefault(info.Service, "unknown"), orDefault(info.InstanceID, "unknown"), orDefault(info.RequestID, "unknown"))
 }
 
-func orDefault(s, def string) string { if s == "" { return def }; return s }
+func orDefault(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
+}
 
 func RegisterInvocation(ctx context.Context, client *redis.Client, info InvocationInfo) error {
 	return registerInvocation(ctx, client, InvocationKey(info), info)
@@ -57,7 +62,11 @@ func registerInvocation(ctx context.Context, client *redis.Client, key string, i
 		"instance_id": info.InstanceID, "request_id": info.RequestID, "method": info.Method,
 		"path": info.Path, "remote_addr": info.RemoteAddr, "started_at": info.StartedAt.Format(time.RFC3339),
 	}
-	if err := client.HSet(ctx, key, fields).Err(); err != nil { return fmt.Errorf("hset %s: %w", key, err) }
-	if err := client.Expire(ctx, key, invocationTTL).Err(); err != nil { return fmt.Errorf("expire %s: %w", key, err) }
+	if err := client.HSet(ctx, key, fields).Err(); err != nil {
+		return fmt.Errorf("hset %s: %w", key, err)
+	}
+	if err := client.Expire(ctx, key, invocationTTL).Err(); err != nil {
+		return fmt.Errorf("expire %s: %w", key, err)
+	}
 	return nil
 }

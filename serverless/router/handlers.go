@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -48,6 +49,18 @@ func eventsHandler(holder *pubsub.Holder[*Runtime]) http.HandlerFunc {
 		}
 
 		go rt.Start(r.Context())
+		if rt.subscribeOnly {
+			readyCtx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			defer cancel()
+			select {
+			case <-rt.ready:
+			case <-readyCtx.Done():
+				rt.Cancel()
+				<-rt.Done()
+				http.Error(w, "subscription readiness unavailable", http.StatusServiceUnavailable)
+				return
+			}
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")

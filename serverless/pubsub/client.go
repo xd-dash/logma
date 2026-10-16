@@ -28,18 +28,29 @@ func NewClientFromEnv() *redis.Client {
 
 func NewClientFromRequest(r *http.Request) *redis.Client {
 	addr := os.Getenv("REDIS_URI")
-	if addr == "" { addr = r.Header.Get(HeaderRedisURI) }
+	if addr == "" {
+		addr = r.Header.Get(HeaderRedisURI)
+	}
 	socket := os.Getenv("REDIS_SOCKET")
-	if socket == "" { socket = r.Header.Get(HeaderRedisSocket) }
+	if socket == "" {
+		socket = r.Header.Get(HeaderRedisSocket)
+	}
 	username := os.Getenv("REDIS_USERNAME")
-	if username == "" { username = r.Header.Get(HeaderRedisUsername) }
+	if username == "" {
+		username = r.Header.Get(HeaderRedisUsername)
+	}
 	auth := redisAuthFromEnv()
-	if auth == "" { auth = r.Header.Get(HeaderRedisAuth) }
+	if auth == "" {
+		auth = r.Header.Get(HeaderRedisAuth)
+	}
 	return newClient(addr, socket, username, auth)
 }
 
 func newClient(addr, socket, username, auth string) *redis.Client {
 	opts := &redis.Options{Addr: addr, Username: username, Password: auth, DB: 0}
-	if socket != "" { opts.Network = "unix"; opts.Addr = socket }
+	if socket != "" {
+		opts.Network = "unix"
+		opts.Addr = socket
+	}
 	return redis.NewClient(opts)
 }

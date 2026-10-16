@@ -15,8 +15,9 @@ const (
 )
 
 type Subscriber struct {
-	stopped   chan struct{}
-	ready     chan struct{}
+	stopped chan struct{}
+	ready   chan struct{}
+
 	readyOnce sync.Once
 	errMu     sync.RWMutex
 	lastErr   error
@@ -30,13 +31,15 @@ func Subscribe(ctx context.Context, client *redis.Client, channel string, onMess
 
 func (s *Subscriber) Stopped() <-chan struct{} { return s.stopped }
 
-// Ready closes after Redis has acknowledged the subscription at least once.
-// Callers that must not start a producer before its consumer exists can wait
-// on Ready together with their own context cancellation.
+// Ready closes after the initial Redis SUBSCRIBE acknowledgement for this
+// Subscriber lifetime. go-redis owns transparent reconnect/resubscribe after
+// that point, so Ready is intentionally not presented as continuous socket
+// health or as a fresh readiness generation after every transport interruption.
 func (s *Subscriber) Ready() <-chan struct{} { return s.ready }
 
-// LastError returns the most recent Redis subscription acknowledgement error.
-// It is diagnostic state only; Subscribe continues its bounded reconnect loop.
+// LastError returns the most recent initial-subscription acknowledgement error.
+// It is diagnostic state only; Subscribe continues its bounded retry loop until
+// the initial subscription is established or the lifetime context is canceled.
 func (s *Subscriber) LastError() error {
 	if s == nil {
 		return nil
@@ -52,7 +55,7 @@ func (s *Subscriber) setLastError(err error) {
 	s.errMu.Unlock()
 }
 
-func (s *Subscriber) markReady() {
+func (s *Subscriber) markInitiallyReady() {
 	s.readyOnce.Do(func() { close(s.ready) })
 }
 
@@ -80,9 +83,13 @@ func (s *Subscriber) run(ctx context.Context, client *redis.Client, channel stri
 			continue
 		}
 		s.setLastError(nil)
-		s.markReady()
+		s.markInitiallyReady()
 		delay = reconnectMinDelay
 
+		// go-redis PubSub.Channel owns transparent network reconnect and
+		// re-subscription. This outer loop is re-entered only if the PubSub
+		// channel itself closes unexpectedly. Ready remains the initial-ACK signal
+		// for this Subscriber lifetime; it is not continuous connection health.
 	receive:
 		for {
 			select {

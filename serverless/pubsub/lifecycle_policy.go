@@ -111,17 +111,17 @@ func BootstrapLifecycleFunctions(ctx context.Context, client *redis.Client) erro
 }
 
 type lifecycleGuard struct {
-	client           *redis.Client
-	cancel           context.CancelFunc
-	timerLimiter     *ratelimiter.Limiter
-	totalLimiter     *ratelimiter.Limiter
-	timerBucket      string
-	totalBucket      string
-	shutdownChannel  string
-	cfg              lifecyclePolicyConfig
-	shutdownOnce     sync.Once
-	observer         Observer
-	baseEvent        ObservabilityEvent
+	client          *redis.Client
+	cancel          context.CancelFunc
+	timerLimiter    *ratelimiter.Limiter
+	totalLimiter    *ratelimiter.Limiter
+	timerBucket     string
+	totalBucket     string
+	shutdownChannel string
+	cfg             lifecyclePolicyConfig
+	shutdownOnce    sync.Once
+	observer        Observer
+	baseEvent       ObservabilityEvent
 }
 
 func newLifecycleGuard(ctx context.Context, client *redis.Client, cancel context.CancelFunc, cp ControlPlane, invocation InvocationInfo, policy Policy, observer Observer) (*lifecycleGuard, error) {

@@ -254,6 +254,9 @@ func put(dst map[string]any, key, value string) {
 }
 
 type httpStatusError struct{ status int }
+
 func (e *httpStatusError) Error() string { return http.StatusText(e.status) }
+
 type errInvalidDomain struct{}
+
 func (errInvalidDomain) Error() string { return "invalid domain" }
