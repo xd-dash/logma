@@ -55,6 +55,7 @@ type PublisherReconciler interface {
 type pubSubResourceAPI struct {
 	store      func() (pubSubResourceStore, error)
 	reconciler PublisherReconciler
+	projectResolver ProjectBindingResolver
 }
 
 func newPubSubResourceAPI() *pubSubResourceAPI {
@@ -76,10 +77,19 @@ func NewPubSubResourceRouterWithPublisherReconciler(reconciler PublisherReconcil
 	return newPubSubResourceRouter(api)
 }
 
+// NewPubSubResourceRouterWithProjectResolver installs verified project binding resolution.
+// The resolver owns authentication and verification; user-provided headers are never authority.
+func NewPubSubResourceRouterWithProjectResolver(resolver ProjectBindingResolver) http.Handler {
+ api := newPubSubResourceAPI()
+ api.projectResolver = resolver
+ return newPubSubResourceRouter(api)
+}
+
 func newPubSubResourceRouter(api *pubSubResourceAPI) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(authenticateAPIKey)
+	if api.projectResolver != nil { r.Use(projectAuthorizationMiddleware(api.projectResolver)) }
 	api.routes(r)
 	return r
 }
