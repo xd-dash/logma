@@ -2,7 +2,6 @@ package routes
 
 import (
  "context"
- "errors"
  "net/http"
  "strings"
 
@@ -50,7 +49,7 @@ func authorizeProjectResource(w http.ResponseWriter, r *http.Request, action, ki
  }
  if strings.TrimSpace(id) == "" { id = "collection" }
  resource := "project/" + binding.ProjectID() + "/pubsub/" + kind + "/" + id
- if strings.Contains(binding.ProjectID(), "/") || strings.Contains(id, "/") || errors.Is(binding.Authorize(action, resource), context.Canceled) {
+ if strings.Contains(binding.ProjectID(), "/") || strings.Contains(id, "/") {
   http.Error(w, "project access denied", http.StatusForbidden); return false
  }
  if err := binding.Authorize(action, resource); err != nil {
@@ -63,8 +62,6 @@ func projectRouteAuthorization(next http.Handler) http.Handler {
  return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
   route := chi.RouteContext(r.Context())
   if route == nil { http.Error(w, "route unavailable", http.StatusForbidden); return }
-  pattern := route.RoutePattern()
-  _ = pattern
   next.ServeHTTP(w, r)
  })
 }
