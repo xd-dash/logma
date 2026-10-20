@@ -38,9 +38,9 @@ func projectAuthorizationMiddleware(resolver ProjectBindingResolver) func(http.H
  }
 }
 
-// authorizeProjectResource enforces the principal's verified binding for every
-// resource operation. Resource identifiers are project-qualified by the
-// immutable project identity; callers cannot select another project by header.
+// authorizeProjectResource enforces the trusted binding for every resource
+// operation. Project-qualified identifiers are policy coordinates, not
+// physical Redis namespace isolation. The latter requires a scoped store.
 func authorizeProjectResource(w http.ResponseWriter, r *http.Request, action, kind, id string) bool {
  binding, ok := r.Context().Value(projectBindingContextKey{}).(VerifiedProjectBinding)
  if !ok || binding == nil || binding.ProjectID() == "" {
