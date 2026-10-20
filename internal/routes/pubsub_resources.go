@@ -94,38 +94,49 @@ func newPubSubResourceRouter(api *pubSubResourceAPI) http.Handler {
 	return r
 }
 
+func (a *pubSubResourceAPI) authorizedRoute(action, kind, param string, handler http.HandlerFunc) http.HandlerFunc {
+ return func(w http.ResponseWriter, r *http.Request) {
+  if a.projectResolver != nil {
+   id := param
+   if param != "collection" { id = chi.URLParam(r, param) }
+   if !authorizeProjectResource(w, r, action, kind, id) { return }
+  }
+  handler(w, r)
+ }
+}
+
 func (a *pubSubResourceAPI) routes(r chi.Router) {
 	r.Route("/pubsub", func(r chi.Router) {
-		r.Get("/channels", a.listChannels)
-		r.Post("/channels", a.putChannel)
-		r.Get("/channels/{name}", a.getChannel)
-		r.Delete("/channels/{name}", a.deleteChannel)
+		r.Get("/channels", a.authorizedRoute("list", "channels", "collection", a.listChannels))
+		r.Post("/channels", a.authorizedRoute("write", "channels", "collection", a.putChannel))
+		r.Get("/channels/{name}", a.authorizedRoute("read", "channels", "name", a.getChannel))
+		r.Delete("/channels/{name}", a.authorizedRoute("delete", "channels", "name", a.deleteChannel))
 
-		r.Get("/callbacks", a.listCallbacks)
-		r.Post("/callbacks", a.putCallback)
-		r.Get("/callbacks/{id}", a.getCallback)
-		r.Delete("/callbacks/{id}", a.deleteCallback)
+		r.Get("/callbacks", a.authorizedRoute("list", "callbacks", "collection", a.listCallbacks))
+		r.Post("/callbacks", a.authorizedRoute("write", "callbacks", "collection", a.putCallback))
+		r.Get("/callbacks/{id}", a.authorizedRoute("read", "callbacks", "id", a.getCallback))
+		r.Delete("/callbacks/{id}", a.authorizedRoute("delete", "callbacks", "id", a.deleteCallback))
 
-		r.Get("/subscribers", a.listSubscribers)
-		r.Post("/subscribers", a.putSubscriber)
-		r.Get("/subscribers/{id}", a.getSubscriber)
-		r.Delete("/subscribers/{id}", a.deleteSubscriber)
+		r.Get("/subscribers", a.authorizedRoute("list", "subscribers", "collection", a.listSubscribers))
+		r.Post("/subscribers", a.authorizedRoute("write", "subscribers", "collection", a.putSubscriber))
+		r.Get("/subscribers/{id}", a.authorizedRoute("read", "subscribers", "id", a.getSubscriber))
+		r.Delete("/subscribers/{id}", a.authorizedRoute("delete", "subscribers", "id", a.deleteSubscriber))
 
-		r.Get("/publishers", a.listPublishers)
-		r.Post("/publishers", a.putPublisher)
-		r.Get("/publishers/{id}", a.getPublisher)
-		r.Delete("/publishers/{id}", a.deletePublisher)
-		r.Post("/publishers/{id}/reconcile", a.reconcilePublisher)
+		r.Get("/publishers", a.authorizedRoute("list", "publishers", "collection", a.listPublishers))
+		r.Post("/publishers", a.authorizedRoute("write", "publishers", "collection", a.putPublisher))
+		r.Get("/publishers/{id}", a.authorizedRoute("read", "publishers", "id", a.getPublisher))
+		r.Delete("/publishers/{id}", a.authorizedRoute("delete", "publishers", "id", a.deletePublisher))
+		r.Post("/publishers/{id}/reconcile", a.authorizedRoute("reconcile", "publishers", "id", a.reconcilePublisher))
 
-		r.Get("/subscription-groups", a.listSubscriptionGroups)
-		r.Post("/subscription-groups", a.putSubscriptionGroup)
-		r.Get("/subscription-groups/{id}", a.getSubscriptionGroup)
-		r.Delete("/subscription-groups/{id}", a.deleteSubscriptionGroup)
+		r.Get("/subscription-groups", a.authorizedRoute("list", "subscription-groups", "collection", a.listSubscriptionGroups))
+		r.Post("/subscription-groups", a.authorizedRoute("write", "subscription-groups", "collection", a.putSubscriptionGroup))
+		r.Get("/subscription-groups/{id}", a.authorizedRoute("read", "subscription-groups", "id", a.getSubscriptionGroup))
+		r.Delete("/subscription-groups/{id}", a.authorizedRoute("delete", "subscription-groups", "id", a.deleteSubscriptionGroup))
 
-		r.Get("/publisher-groups", a.listPublisherGroups)
-		r.Post("/publisher-groups", a.putPublisherGroup)
-		r.Get("/publisher-groups/{id}", a.getPublisherGroup)
-		r.Delete("/publisher-groups/{id}", a.deletePublisherGroup)
+		r.Get("/publisher-groups", a.authorizedRoute("list", "publisher-groups", "collection", a.listPublisherGroups))
+		r.Post("/publisher-groups", a.authorizedRoute("write", "publisher-groups", "collection", a.putPublisherGroup))
+		r.Get("/publisher-groups/{id}", a.authorizedRoute("read", "publisher-groups", "id", a.getPublisherGroup))
+		r.Delete("/publisher-groups/{id}", a.authorizedRoute("delete", "publisher-groups", "id", a.deletePublisherGroup))
 	})
 }
 
