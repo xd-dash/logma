@@ -5,7 +5,6 @@ import (
  "net/http"
  "strings"
 
- "github.com/go-chi/chi/v5"
 )
 
 // ProjectBindingResolver resolves verified authority established by a trusted
@@ -56,12 +55,4 @@ func authorizeProjectResource(w http.ResponseWriter, r *http.Request, action, ki
   http.Error(w, "project access denied", http.StatusForbidden); return false
  }
  return true
-}
-
-func projectRouteAuthorization(next http.Handler) http.Handler {
- return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-  route := chi.RouteContext(r.Context())
-  if route == nil { http.Error(w, "route unavailable", http.StatusForbidden); return }
-  next.ServeHTTP(w, r)
- })
 }
