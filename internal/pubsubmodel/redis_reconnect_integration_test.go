@@ -3,6 +3,7 @@ package pubsubmodel
 import (
  "context"
  "os"
+ "strings"
  "testing"
 
  "github.com/redis/go-redis/v9"
@@ -15,7 +16,7 @@ func TestRedisStoreReconnectPersistence(t *testing.T) {
  if addr=="" {t.Skip("LOGMA_PUBSUBMODEL_REDIS_ADDR is not set")}
  ctx:=context.Background()
  first:=redis.NewClient(&redis.Options{Addr:addr})
- scope:="agni-reconnect-"+t.Name()
+ scope:="agni-reconnect-"+strings.ReplaceAll(t.Name(), "/", "-")
  store,err:=NewRedisStore(first,scope);if err!=nil {t.Fatal(err)}
  if err=store.PutChannel(ctx,Channel{Name:"reconnect-events"});err!=nil {t.Fatal(err)}
  if err=first.Close();err!=nil {t.Fatal(err)}
