@@ -15,7 +15,7 @@ func newPubSubResourceRedisStore() (pubSubResourceStore, error) {
 }
 
 func newPubSubResourceRedisStoreForProject(project string) (pubSubResourceStore, error) {
- if project == "" || strings.ContainsAny(project, "/\\\\: \t\n") || project == "." || project == ".." { return nil, errors.New("invalid verified project identity") }
+ if project == "" || strings.ContainsAny(project, `/\\: `) || project == "." || project == ".." { return nil, errors.New("invalid verified project identity") }
  scope := strings.TrimSpace(os.Getenv("FATLINE_SCOPE"))
  if scope == "" { return nil, errors.New("FATLINE_SCOPE is required for project-scoped storage") }
  return newPubSubResourceRedisStoreWithScope(scope + ":project:" + project)
