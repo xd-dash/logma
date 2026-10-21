@@ -4,7 +4,6 @@ import (
  "context"
  "net/http"
  "strings"
-
 )
 
 // ProjectBindingResolver resolves verified authority established by a trusted
