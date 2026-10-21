@@ -23,6 +23,7 @@ type Binding interface {
 // Resolver authenticates the bearer credential and returns a policy-bound
 // identity for the configured service audience. Implementations MUST validate
 // signature, issuer, expiry, exact audience, policy digest and revocation.
+// No verification implementation is included in this package.
 type Resolver interface {
  Resolve(context.Context, string, string) (Binding, error)
 }
