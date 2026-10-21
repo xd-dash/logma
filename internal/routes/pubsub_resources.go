@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/xd-dash/logma/internal/pubsubmodel"
+ "github.com/xd-dash/logma/serverless/authhttp"
 )
 
 const maxPubSubResourceBodyBytes = 1 << 20
@@ -85,6 +86,16 @@ func NewPubSubResourceRouterWithProjectResolver(resolver ProjectBindingResolver)
  api.projectResolver = resolver
  api.projectStore = newPubSubResourceRedisStoreForProject
  return newPubSubResourceRouter(api)
+}
+
+// NewPubSubResourceRouterWithHTTPBinding composes shared bearer authentication
+// with the existing resource-level Prajapati policy checks. The resolver is
+// injected by the deployment and must verify actual credentials and revocation.
+func NewPubSubResourceRouterWithHTTPBinding(audience string, resolver authhttp.Resolver) http.Handler {
+ api := newPubSubResourceAPI()
+ api.projectResolver = authhttp.ContextResolver{}
+ api.projectStore = newPubSubResourceRedisStoreForProject
+ return authhttp.Middleware(audience, resolver)(newPubSubResourceRouter(api))
 }
 
 func newPubSubResourceRouter(api *pubSubResourceAPI) http.Handler {
