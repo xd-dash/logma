@@ -15,12 +15,14 @@ func TestRedisStoreReconnectPersistence(t *testing.T) {
  addr:=os.Getenv("LOGMA_PUBSUBMODEL_REDIS_ADDR")
  if addr=="" {t.Skip("LOGMA_PUBSUBMODEL_REDIS_ADDR is not set")}
  ctx:=context.Background()
- first:=redis.NewClient(&redis.Options{Addr:addr})
+ options:=&redis.Options{Addr:addr}
+ if strings.HasPrefix(addr,"/") {options.Network="unix"}
+ first:=redis.NewClient(options)
  scope:="agni-reconnect-"+strings.ReplaceAll(t.Name(), "/", "-")
  store,err:=NewRedisStore(first,scope);if err!=nil {t.Fatal(err)}
  if err=store.PutChannel(ctx,Channel{Name:"reconnect-events"});err!=nil {t.Fatal(err)}
  if err=first.Close();err!=nil {t.Fatal(err)}
- second:=redis.NewClient(&redis.Options{Addr:addr})
+ second:=redis.NewClient(options)
  defer second.Close()
  restored,err:=NewRedisStore(second,scope);if err!=nil {t.Fatal(err)}
  value,err:=restored.GetChannel(ctx,"reconnect-events")
