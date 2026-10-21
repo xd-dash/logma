@@ -4,6 +4,7 @@ import (
  "context"
  "net/http"
  "strings"
+ "github.com/xd-dash/logma/serverless/authhttp"
 )
 
 // ProjectBindingResolver resolves verified authority established by a trusted
@@ -28,6 +29,15 @@ func projectAuthorizationMiddleware(resolver ProjectBindingResolver) func(http.H
   return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
    if resolver == nil { http.Error(w, "project authorization is unavailable", http.StatusServiceUnavailable); return }
    binding, err := resolver.ResolveProjectBinding(r.Context())
+   if verified, ok := authhttp.FromContext(r.Context()); ok {
+    // If an authenticated HTTP boundary is installed, the resource
+    // resolver must use the same binding; a second independent identity
+    // would permit split-brain project authority.
+    if err != nil || binding == nil || verified.ProjectID() != binding.ProjectID() {
+     http.Error(w, "project identity mismatch", http.StatusForbidden)
+     return
+    }
+   }
    if err != nil || binding == nil || strings.TrimSpace(binding.ProjectID()) == "" {
     http.Error(w, "verified project binding required", http.StatusForbidden)
     return
