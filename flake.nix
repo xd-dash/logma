@@ -133,6 +133,24 @@
         touch "$out/etc/s6-overlay/user-bundles.d/user/contents.d/nginx"
       '';
 
+      # Provider-only variant for the host-managed shared Redis composition.
+      # This image contains neither Redis nor s6-overlay; it does not supervise peers.
+      providerImage = pkgs.dockerTools.buildLayeredImage {
+        name = "logma-provider";
+        tag = "candidate";
+        contents = [ logma pkgs.cacert ];
+        config = {
+          Entrypoint = [ "${logma}/bin/logma" ];
+          Env = [
+            "REDIS_NETWORK=unix"
+            "REDIS_SOCKET=/run/redis/redis.sock"
+            "LOGMA_BIND_ADDR=127.0.0.1"
+          ];
+          WorkingDir = "/";
+        };
+        maxLayers = 100;
+      };
+
       image = pkgs.dockerTools.buildLayeredImage {
         name = "logma-cell";
         tag = "latest";
@@ -165,6 +183,7 @@
         default = image;
         logma = logma;
         image = image;
+        provider-image = providerImage;
       };
     };
 }
