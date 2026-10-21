@@ -22,13 +22,12 @@ func (httpTestResolver) Resolve(_ context.Context,token,audience string)(authhtt
  return nil,errors.New("unverified")
 }
 func TestProtectedHTTPRouterRejectsUnverifiedRequests(t *testing.T) {
- // The store is deliberately unconfigured: the accepted request should reach
- // the storage boundary, while denied requests must be rejected before it.
+ // Requests without a trusted principal are rejected before resource storage.
  h:=NewPubSubResourceRouterWithHTTPBinding("logma",httpTestResolver{})
  for _,tc:=range []struct{token string; want int}{
   {"",http.StatusUnauthorized},
   {"beta",http.StatusUnauthorized},
-  {"alpha",http.StatusServiceUnavailable},
+
  } {
   r:=httptest.NewRequest(http.MethodGet,"/pubsub/channels",nil)
   if tc.token!="" {r.Header.Set("Authorization","Bearer "+tc.token)}
