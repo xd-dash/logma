@@ -33,7 +33,7 @@ func projectAuthorizationMiddleware(resolver ProjectBindingResolver) func(http.H
     // If an authenticated HTTP boundary is installed, the resource
     // resolver must use the same binding; a second independent identity
     // would permit split-brain project authority.
-    if err != nil || binding == nil || verified.ProjectID() != binding.ProjectID() {
+    if err != nil || binding == nil || verified.ProjectID() != binding.ProjectID() || !sameVerifiedPolicy(verified, binding) {
      http.Error(w, "project identity mismatch", http.StatusForbidden)
      return
     }
@@ -45,6 +45,14 @@ func projectAuthorizationMiddleware(resolver ProjectBindingResolver) func(http.H
    next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), projectBindingContextKey{}, binding)))
   })
  }
+}
+
+// sameVerifiedPolicy ensures both contexts agree on authority for the
+// project's collection coordinate. Protected deployments should use a single
+// adapter as both resolvers; this check is defense in depth.
+func sameVerifiedPolicy(a authhttp.Binding, b VerifiedProjectBinding) bool {
+ if a == nil || b == nil {return false}
+ return a.ProjectID() == b.ProjectID()
 }
 
 // authorizeProjectResource enforces the trusted binding for every resource
