@@ -50,7 +50,9 @@ func TestPubSubVerifiedProjectBoundary(t *testing.T) {
  if got:=request(http.MethodDelete,"/pubsub/channels/events","");got.Code!=403 {t.Fatalf("denied delete=%d",got.Code)}
  if got:=request(http.MethodGet,"/pubsub/callbacks","");got.Code!=403 {t.Fatalf("cross-resource list=%d",got.Code)}
  a.projectResolver=fixedProjectResolver{binding:fixedProjectBinding{project:"beta",allow:map[string]bool{}}}
+ router=newPubSubResourceRouter(a)
  if got:=request(http.MethodGet,"/pubsub/channels/events","");got.Code!=403 {t.Fatalf("cross-project read=%d",got.Code)}
  a.projectResolver=fixedProjectResolver{err:errors.New("no identity")}
+ router=newPubSubResourceRouter(a)
  if got:=request(http.MethodGet,"/pubsub/channels/events","");got.Code!=403 {t.Fatalf("missing binding=%d",got.Code)}
 }
