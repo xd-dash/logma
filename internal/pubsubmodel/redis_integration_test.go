@@ -18,7 +18,9 @@ func TestRedisStoreGraphRoundTrip(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{Addr: addr})
+	options := &redis.Options{Addr: addr}
+ if strings.HasPrefix(addr, "/") { options.Network = "unix" }
+ client := redis.NewClient(options)
 	t.Cleanup(func() { _ = client.Close() })
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Fatalf("ping Redis: %v", err)
