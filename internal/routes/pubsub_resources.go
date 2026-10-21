@@ -88,12 +88,21 @@ func NewPubSubResourceRouterWithProjectResolver(resolver ProjectBindingResolver)
  return newPubSubResourceRouter(api)
 }
 
+// verifiedHTTPProjectResolver adapts shared auth context to the existing
+// resource-router interface without re-verifying a bearer token.
+type verifiedHTTPProjectResolver struct{}
+func (verifiedHTTPProjectResolver) ResolveProjectBinding(ctx context.Context) (VerifiedProjectBinding, error) {
+ binding, err := (authhttp.ContextResolver{}).ResolveProjectBinding(ctx)
+ if err != nil {return nil, err}
+ return binding, nil
+}
+
 // NewPubSubResourceRouterWithHTTPBinding composes shared bearer authentication
 // with the existing resource-level Prajapati policy checks. The resolver is
 // injected by the deployment and must verify actual credentials and revocation.
 func NewPubSubResourceRouterWithHTTPBinding(audience string, resolver authhttp.Resolver) http.Handler {
  api := newPubSubResourceAPI()
- api.projectResolver = authhttp.ContextResolver{}
+ api.projectResolver = verifiedHTTPProjectResolver{}
  api.projectStore = newPubSubResourceRedisStoreForProject
  return authhttp.Middleware(audience, resolver)(newPubSubResourceRouter(api))
 }
