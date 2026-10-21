@@ -194,13 +194,13 @@ func (a *pubSubResourceAPI) getCallback(w http.ResponseWriter, r *http.Request) 
 }
 
 func (a *pubSubResourceAPI) deleteCallback(w http.ResponseWriter, r *http.Request) {
-	a.delete(w, func(store pubSubResourceStore) error {
+	a.delete(w, r, func(store pubSubResourceStore) error {
 		return store.DeleteCallback(r.Context(), chi.URLParam(r, "id"))
 	}, "failed to delete Callback")
 }
 
 func (a *pubSubResourceAPI) listCallbacks(w http.ResponseWriter, r *http.Request) {
-	a.list(w, func(store pubSubResourceStore) ([]string, error) { return store.CallbackIDs(r.Context()) })
+	a.list(w, r, func(store pubSubResourceStore) ([]string, error) { return store.CallbackIDs(r.Context()) })
 }
 
 func (a *pubSubResourceAPI) putSubscriber(w http.ResponseWriter, r *http.Request) {
@@ -212,7 +212,7 @@ func (a *pubSubResourceAPI) putSubscriber(w http.ResponseWriter, r *http.Request
 }
 
 func (a *pubSubResourceAPI) getSubscriber(w http.ResponseWriter, r *http.Request) {
-	store, ok := a.resourceStore(w)
+	store, ok := a.resourceStore(w, r)
 	if !ok {
 		return
 	}
@@ -221,13 +221,13 @@ func (a *pubSubResourceAPI) getSubscriber(w http.ResponseWriter, r *http.Request
 }
 
 func (a *pubSubResourceAPI) deleteSubscriber(w http.ResponseWriter, r *http.Request) {
-	a.delete(w, func(store pubSubResourceStore) error {
+	a.delete(w, r, func(store pubSubResourceStore) error {
 		return store.DeleteSubscriber(r.Context(), chi.URLParam(r, "id"))
 	}, "failed to delete Subscriber")
 }
 
 func (a *pubSubResourceAPI) listSubscribers(w http.ResponseWriter, r *http.Request) {
-	a.list(w, func(store pubSubResourceStore) ([]string, error) { return store.SubscriberIDs(r.Context()) })
+	a.list(w, r, func(store pubSubResourceStore) ([]string, error) { return store.SubscriberIDs(r.Context()) })
 }
 
 func (a *pubSubResourceAPI) putPublisher(w http.ResponseWriter, r *http.Request) {
@@ -239,7 +239,7 @@ func (a *pubSubResourceAPI) putPublisher(w http.ResponseWriter, r *http.Request)
 }
 
 func (a *pubSubResourceAPI) getPublisher(w http.ResponseWriter, r *http.Request) {
-	store, ok := a.resourceStore(w)
+	store, ok := a.resourceStore(w, r)
 	if !ok {
 		return
 	}
@@ -248,13 +248,13 @@ func (a *pubSubResourceAPI) getPublisher(w http.ResponseWriter, r *http.Request)
 }
 
 func (a *pubSubResourceAPI) deletePublisher(w http.ResponseWriter, r *http.Request) {
-	a.delete(w, func(store pubSubResourceStore) error {
+	a.delete(w, r, func(store pubSubResourceStore) error {
 		return store.DeletePublisher(r.Context(), chi.URLParam(r, "id"))
 	}, "failed to delete Publisher")
 }
 
 func (a *pubSubResourceAPI) listPublishers(w http.ResponseWriter, r *http.Request) {
-	a.list(w, func(store pubSubResourceStore) ([]string, error) { return store.PublisherIDs(r.Context()) })
+	a.list(w, r, func(store pubSubResourceStore) ([]string, error) { return store.PublisherIDs(r.Context()) })
 }
 
 func (a *pubSubResourceAPI) reconcilePublisher(w http.ResponseWriter, r *http.Request) {
@@ -280,7 +280,7 @@ func (a *pubSubResourceAPI) putSubscriptionGroup(w http.ResponseWriter, r *http.
 }
 
 func (a *pubSubResourceAPI) getSubscriptionGroup(w http.ResponseWriter, r *http.Request) {
-	store, ok := a.resourceStore(w)
+	store, ok := a.resourceStore(w, r)
 	if !ok {
 		return
 	}
@@ -289,13 +289,13 @@ func (a *pubSubResourceAPI) getSubscriptionGroup(w http.ResponseWriter, r *http.
 }
 
 func (a *pubSubResourceAPI) deleteSubscriptionGroup(w http.ResponseWriter, r *http.Request) {
-	a.delete(w, func(store pubSubResourceStore) error {
+	a.delete(w, r, func(store pubSubResourceStore) error {
 		return store.DeleteSubscriptionGroup(r.Context(), chi.URLParam(r, "id"))
 	}, "failed to delete SubscriptionGroup")
 }
 
 func (a *pubSubResourceAPI) listSubscriptionGroups(w http.ResponseWriter, r *http.Request) {
-	a.list(w, func(store pubSubResourceStore) ([]string, error) { return store.SubscriptionGroupIDs(r.Context()) })
+	a.list(w, r, func(store pubSubResourceStore) ([]string, error) { return store.SubscriptionGroupIDs(r.Context()) })
 }
 
 func (a *pubSubResourceAPI) putPublisherGroup(w http.ResponseWriter, r *http.Request) {
@@ -307,7 +307,7 @@ func (a *pubSubResourceAPI) putPublisherGroup(w http.ResponseWriter, r *http.Req
 }
 
 func (a *pubSubResourceAPI) getPublisherGroup(w http.ResponseWriter, r *http.Request) {
-	store, ok := a.resourceStore(w)
+	store, ok := a.resourceStore(w, r)
 	if !ok {
 		return
 	}
@@ -316,13 +316,13 @@ func (a *pubSubResourceAPI) getPublisherGroup(w http.ResponseWriter, r *http.Req
 }
 
 func (a *pubSubResourceAPI) deletePublisherGroup(w http.ResponseWriter, r *http.Request) {
-	a.delete(w, func(store pubSubResourceStore) error {
+	a.delete(w, r, func(store pubSubResourceStore) error {
 		return store.DeletePublisherGroup(r.Context(), chi.URLParam(r, "id"))
 	}, "failed to delete PublisherGroup")
 }
 
 func (a *pubSubResourceAPI) listPublisherGroups(w http.ResponseWriter, r *http.Request) {
-	a.list(w, func(store pubSubResourceStore) ([]string, error) { return store.PublisherGroupIDs(r.Context()) })
+	a.list(w, r, func(store pubSubResourceStore) ([]string, error) { return store.PublisherGroupIDs(r.Context()) })
 }
 
 func (a *pubSubResourceAPI) put(
@@ -339,7 +339,7 @@ func (a *pubSubResourceAPI) put(
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	store, ok := a.resourceStore(w)
+	store, ok := a.resourceStore(w, r)
 	if !ok {
 		return
 	}
@@ -356,7 +356,7 @@ func (a *pubSubResourceAPI) put(
 }
 
 func (a *pubSubResourceAPI) delete(w http.ResponseWriter, r *http.Request, fn func(pubSubResourceStore) error, message string) {
-	store, ok := a.resourceStore(w)
+	store, ok := a.resourceStore(w, r)
 	if !ok {
 		return
 	}
@@ -368,7 +368,7 @@ func (a *pubSubResourceAPI) delete(w http.ResponseWriter, r *http.Request, fn fu
 }
 
 func (a *pubSubResourceAPI) list(w http.ResponseWriter, r *http.Request, fn func(pubSubResourceStore) ([]string, error)) {
-	store, ok := a.resourceStore(w)
+	store, ok := a.resourceStore(w, r)
 	if !ok {
 		return
 	}
