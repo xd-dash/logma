@@ -67,8 +67,8 @@ func FromContext(ctx context.Context) (Binding, bool) {
 }
 
 func bearer(r *http.Request) (string, error) {
- values, exists := r.Header["Authorization"]
- if !exists || len(values) != 1 { return "", errors.New("exactly one Authorization header required") }
+ values := r.Header.Values("Authorization")
+ if len(values) != 1 { return "", errors.New("exactly one Authorization header required") }
  parts := strings.SplitN(values[0], " ", 2)
  if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || parts[1] == "" || strings.TrimSpace(parts[1]) != parts[1] || strings.ContainsAny(parts[1], " \t\r\n,") {
   return "", errors.New("invalid bearer credential")
