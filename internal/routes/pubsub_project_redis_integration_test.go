@@ -1,7 +1,6 @@
 package routes
 
 import (
- "errors"
  "net/http"
  "os"
  "strings"
@@ -35,5 +34,4 @@ func TestProjectRedisGraphIsolation(t *testing.T) {
  alpha=mk("alpha") // fresh router and Redis connection
  if resp:=requestResource(t,alpha,http.MethodGet,"/pubsub/channels/shared","");resp.Code!=200 {t.Fatalf("alpha reconnect: %d %s",resp.Code,resp.Body.String())}
  if resp:=requestResource(t,alpha,http.MethodDelete,"/pubsub/channels/shared","");resp.Code!=204 {t.Fatalf("alpha cleanup: %d %s",resp.Code,resp.Body.String())}
- _=errors.New
 }
