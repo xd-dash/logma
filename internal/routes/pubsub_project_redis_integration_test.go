@@ -50,6 +50,7 @@ func (b integrationBinding) Authorize(action,resource string) error {
  }
  return errors.New("denied")
 }
+// integrationVerifier is an isolated test double, not Prajapati credential verification.
 type integrationVerifier struct{}
 func (integrationVerifier) Resolve(_ context.Context, credential,audience string)(authhttp.Binding,error) {
  if audience!="logma" {return nil,errors.New("wrong audience")}
