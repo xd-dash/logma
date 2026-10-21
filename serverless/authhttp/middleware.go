@@ -29,6 +29,23 @@ type Resolver interface {
 
 type identityKey struct{}
 
+// Authenticate adapts the middleware to services whose existing HTTP API
+// accepts a request-to-context authentication callback (for example Skymill).
+// The supplied callback receives the request with its verified binding in
+// context and must derive service-specific grants; this function never grants
+// stream or resource permissions itself.
+func Authenticate(audience string, resolver Resolver, grant func(*http.Request, Binding) (context.Context, error)) func(*http.Request) (context.Context, error) {
+ return func(r *http.Request) (context.Context, error) {
+  if grant == nil { return nil, errors.New("grant mapper required") }
+  credential, err := bearer(r)
+  if err != nil || resolver == nil || audience == "" {return nil, errors.New("bearer credential required")}
+  binding, err := resolver.Resolve(r.Context(), credential, audience)
+  if err != nil || binding == nil || binding.ProjectID() == "" {return nil, errors.New("verified binding required")}
+  return grant(r.WithContext(context.WithValue(r.Context(), identityKey{}, binding)), binding)
+ }
+}
+
+
 // ContextResolver adapts a verified HTTP context into application-owned
 // project resolver interfaces without authenticating the request twice.
 type ContextResolver struct{}
