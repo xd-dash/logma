@@ -42,7 +42,8 @@ func Authenticate(audience string, resolver Resolver, grant func(*http.Request, 
   binding, err := resolver.Resolve(r.Context(), credential, audience)
   if err != nil || binding == nil || binding.ProjectID() == "" {return nil, errors.New("verified binding required")}
   ctx, err := grant(r.WithContext(context.WithValue(r.Context(), identityKey{}, binding)), binding)
-  if err != nil || ctx == nil {return nil, errors.New("service grant denied")}
+  if err != nil {return nil, err}
+  if ctx == nil {return nil, errors.New("service grant denied")}
   return context.WithValue(ctx, identityKey{}, binding),nil
  }
 }
