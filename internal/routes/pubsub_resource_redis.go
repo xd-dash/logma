@@ -1,6 +1,8 @@
 package routes
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"strconv"
@@ -18,7 +20,8 @@ func newPubSubResourceRedisStoreForProject(project string) (pubSubResourceStore,
  if project == "" || strings.ContainsAny(project, `/\\: `) || project == "." || project == ".." { return nil, errors.New("invalid verified project identity") }
  scope := strings.TrimSpace(os.Getenv("FATLINE_SCOPE"))
  if scope == "" { return nil, errors.New("FATLINE_SCOPE is required for project-scoped storage") }
- return newPubSubResourceRedisStoreWithScope(scope + ":project:" + project)
+ digest := sha256.Sum256([]byte(scope + "\x00" + project))
+ return newPubSubResourceRedisStoreWithScope("project-" + hex.EncodeToString(digest[:]))
 }
 
 func newPubSubResourceRedisStoreWithScope(scope string) (pubSubResourceStore, error) {
