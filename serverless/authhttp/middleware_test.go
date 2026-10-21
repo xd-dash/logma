@@ -16,7 +16,7 @@ func (b testBinding) Authorize(action, resource string) error {
 }
 type testResolver struct{ binding Binding; err error; called *int }
 func (v testResolver) Resolve(_ context.Context, token, audience string)(Binding,error) {
- *v.called++
+(*v.called)++
  if token!="valid-token" || audience!="logma" {return nil, errors.New("invalid")}
  return v.binding,v.err
 }
