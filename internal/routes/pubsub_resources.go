@@ -104,13 +104,17 @@ func NewPubSubResourceRouterWithHTTPBinding(audience string, resolver authhttp.R
  api := newPubSubResourceAPI()
  api.projectResolver = verifiedHTTPProjectResolver{}
  api.projectStore = newPubSubResourceRedisStoreForProject
- return authhttp.Middleware(audience, resolver)(newPubSubResourceRouter(api))
+ return authhttp.Middleware(audience, resolver)(newPubSubResourceRouterWithAPIKey(api, false))
 }
 
 func newPubSubResourceRouter(api *pubSubResourceAPI) http.Handler {
+ return newPubSubResourceRouterWithAPIKey(api, true)
+}
+
+func newPubSubResourceRouterWithAPIKey(api *pubSubResourceAPI, requireAPIKey bool) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
-	r.Use(authenticateAPIKey)
+	if requireAPIKey { r.Use(authenticateAPIKey) }
 	if api.projectResolver != nil { r.Use(projectAuthorizationMiddleware(api.projectResolver)) }
 	api.routes(r)
 	return r
