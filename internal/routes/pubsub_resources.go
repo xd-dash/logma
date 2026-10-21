@@ -56,6 +56,7 @@ type pubSubResourceAPI struct {
 	store      func() (pubSubResourceStore, error)
 	reconciler PublisherReconciler
 	projectResolver ProjectBindingResolver
+	projectStore func(string) (pubSubResourceStore, error)
 }
 
 func newPubSubResourceAPI() *pubSubResourceAPI {
@@ -82,6 +83,7 @@ func NewPubSubResourceRouterWithPublisherReconciler(reconciler PublisherReconcil
 func NewPubSubResourceRouterWithProjectResolver(resolver ProjectBindingResolver) http.Handler {
  api := newPubSubResourceAPI()
  api.projectResolver = resolver
+ api.projectStore = newPubSubResourceRedisStoreForProject
  return newPubSubResourceRouter(api)
 }
 
@@ -103,6 +105,13 @@ func (a *pubSubResourceAPI) authorizedRoute(action, kind, param string, handler 
   }
   handler(w, r)
  }
+}
+
+func (a *pubSubResourceAPI) storeForRequest(r *http.Request) (pubSubResourceStore, error) {
+ if a.projectResolver == nil { return a.store() }
+ binding, ok := r.Context().Value(projectBindingContextKey{}).(VerifiedProjectBinding)
+ if !ok || binding == nil || a.projectStore == nil { return nil, errors.New("project-scoped storage unavailable") }
+ return a.projectStore(binding.ProjectID())
 }
 
 func (a *pubSubResourceAPI) routes(r chi.Router) {
@@ -149,7 +158,7 @@ func (a *pubSubResourceAPI) putChannel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *pubSubResourceAPI) getChannel(w http.ResponseWriter, r *http.Request) {
-	store, ok := a.resourceStore(w)
+	store, ok := a.resourceStore(w, r)
 	if !ok {
 		return
 	}
@@ -158,13 +167,13 @@ func (a *pubSubResourceAPI) getChannel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *pubSubResourceAPI) deleteChannel(w http.ResponseWriter, r *http.Request) {
-	a.delete(w, func(store pubSubResourceStore) error {
+	a.delete(w, r, func(store pubSubResourceStore) error {
 		return store.DeleteChannel(r.Context(), chi.URLParam(r, "name"))
 	}, "failed to delete Channel")
 }
 
 func (a *pubSubResourceAPI) listChannels(w http.ResponseWriter, r *http.Request) {
-	a.list(w, func(store pubSubResourceStore) ([]string, error) { return store.ChannelIDs(r.Context()) })
+	a.list(w, r, func(store pubSubResourceStore) ([]string, error) { return store.ChannelIDs(r.Context()) })
 }
 
 func (a *pubSubResourceAPI) putCallback(w http.ResponseWriter, r *http.Request) {
@@ -176,7 +185,7 @@ func (a *pubSubResourceAPI) putCallback(w http.ResponseWriter, r *http.Request) 
 }
 
 func (a *pubSubResourceAPI) getCallback(w http.ResponseWriter, r *http.Request) {
-	store, ok := a.resourceStore(w)
+	store, ok := a.resourceStore(w, r)
 	if !ok {
 		return
 	}
@@ -346,7 +355,7 @@ func (a *pubSubResourceAPI) put(
 	writeResource(w, http.StatusCreated, stored)
 }
 
-func (a *pubSubResourceAPI) delete(w http.ResponseWriter, fn func(pubSubResourceStore) error, message string) {
+func (a *pubSubResourceAPI) delete(w http.ResponseWriter, r *http.Request, fn func(pubSubResourceStore) error, message string) {
 	store, ok := a.resourceStore(w)
 	if !ok {
 		return
@@ -358,7 +367,7 @@ func (a *pubSubResourceAPI) delete(w http.ResponseWriter, fn func(pubSubResource
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (a *pubSubResourceAPI) list(w http.ResponseWriter, fn func(pubSubResourceStore) ([]string, error)) {
+func (a *pubSubResourceAPI) list(w http.ResponseWriter, r *http.Request, fn func(pubSubResourceStore) ([]string, error)) {
 	store, ok := a.resourceStore(w)
 	if !ok {
 		return
@@ -371,8 +380,8 @@ func (a *pubSubResourceAPI) list(w http.ResponseWriter, fn func(pubSubResourceSt
 	writeResource(w, http.StatusOK, ids)
 }
 
-func (a *pubSubResourceAPI) resourceStore(w http.ResponseWriter) (pubSubResourceStore, bool) {
-	store, err := a.store()
+func (a *pubSubResourceAPI) resourceStore(w http.ResponseWriter, r *http.Request) (pubSubResourceStore, bool) {
+	store, err := a.storeForRequest(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return nil, false
