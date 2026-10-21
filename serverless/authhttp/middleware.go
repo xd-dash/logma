@@ -29,6 +29,17 @@ type Resolver interface {
 
 type identityKey struct{}
 
+// ContextResolver adapts a verified HTTP context into application-owned
+// project resolver interfaces without authenticating the request twice.
+type ContextResolver struct{}
+
+func (ContextResolver) ResolveProjectBinding(ctx context.Context) (Binding, error) {
+ binding, ok := FromContext(ctx)
+ if !ok || binding.ProjectID() == "" {return nil, errors.New("verified HTTP binding required")}
+ return binding, nil
+}
+
+
 // FromContext returns only a binding installed by this middleware.
 func FromContext(ctx context.Context) (Binding, bool) {
  binding, ok := ctx.Value(identityKey{}).(Binding)
