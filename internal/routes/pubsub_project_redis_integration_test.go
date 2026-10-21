@@ -2,6 +2,10 @@ package routes
 
 import (
  "net/http"
+ "net/http/httptest"
+ "context"
+ "errors"
+ "github.com/xd-dash/logma/serverless/authhttp"
  "os"
  "strings"
  "testing"
@@ -34,4 +38,49 @@ func TestProjectRedisGraphIsolation(t *testing.T) {
  alpha=mk("alpha") // fresh router and Redis connection
  if resp:=requestResource(t,alpha,http.MethodGet,"/pubsub/channels/shared","");resp.Code!=200 {t.Fatalf("alpha reconnect: %d %s",resp.Code,resp.Body.String())}
  if resp:=requestResource(t,alpha,http.MethodDelete,"/pubsub/channels/shared","");resp.Code!=204 {t.Fatalf("alpha cleanup: %d %s",resp.Code,resp.Body.String())}
+}
+
+type integrationBinding struct{ project string }
+func (b integrationBinding) ProjectID() string {return b.project}
+func (b integrationBinding) Authorize(action,resource string) error {
+ for _,id:=range []string{"collection","shared"} {
+  for _,a:=range []string{"write","read","list","delete"} {
+   if a==action && resource=="project/"+b.project+"/pubsub/channels/"+id {return nil}
+  }
+ }
+ return errors.New("denied")
+}
+type integrationVerifier struct{}
+func (integrationVerifier) Resolve(_ context.Context, credential,audience string)(authhttp.Binding,error) {
+ if audience!="logma" {return nil,errors.New("wrong audience")}
+ switch credential {
+ case "alpha-secret": return integrationBinding{project:"alpha"},nil
+ case "beta-secret": return integrationBinding{project:"beta"},nil
+ default: return nil,errors.New("invalid credential")
+ }
+}
+func TestAuthenticatedProjectRedisIsolation(t *testing.T) {
+ addr:=os.Getenv("LOGMA_PUBSUBMODEL_REDIS_ADDR")
+ if addr=="" {t.Skip("LOGMA_PUBSUBMODEL_REDIS_ADDR is not set")}
+ t.Setenv("PUBSUB_RESOURCE_REDIS_URI",addr)
+ t.Setenv("FATLINE_SCOPE","agni-authenticated-project-isolation")
+ mk:=func() http.Handler{return NewPubSubResourceRouterWithHTTPBinding("logma",integrationVerifier{})}
+ h:=mk()
+ request:=func(handler http.Handler,token,method,path,body string)*httptest.ResponseRecorder{
+  t.Helper()
+  req:=httptest.NewRequest(method,path,strings.NewReader(body))
+  if token!="" {req.Header.Set("Authorization","Bearer "+token)}
+  req.Header.Set("Content-Type","application/json")
+  rr:=httptest.NewRecorder()
+  handler.ServeHTTP(rr,req)
+  return rr
+ }
+ if r:=request(h,"",http.MethodGet,"/pubsub/channels","");r.Code!=401 {t.Fatalf("missing token: %d",r.Code)}
+ if r:=request(h,"invalid",http.MethodGet,"/pubsub/channels","");r.Code!=401 {t.Fatalf("invalid token: %d",r.Code)}
+ if r:=request(h,"alpha-secret",http.MethodPost,"/pubsub/channels",`{"name":"shared"}`);r.Code!=201 {t.Fatalf("alpha create: %d %s",r.Code,r.Body.String())}
+ if r:=request(h,"beta-secret",http.MethodGet,"/pubsub/channels/shared","");r.Code!=404 {t.Fatalf("beta read: %d %s",r.Code,r.Body.String())}
+ if r:=request(h,"beta-secret",http.MethodGet,"/pubsub/channels","");r.Code!=200 || strings.Contains(r.Body.String(),"shared") {t.Fatalf("beta list: %d %s",r.Code,r.Body.String())}
+ h=mk()
+ if r:=request(h,"alpha-secret",http.MethodGet,"/pubsub/channels/shared","");r.Code!=200 {t.Fatalf("alpha reconnect: %d %s",r.Code,r.Body.String())}
+ if r:=request(h,"alpha-secret",http.MethodDelete,"/pubsub/channels/shared","");r.Code!=204 {t.Fatalf("alpha cleanup: %d %s",r.Code,r.Body.String())}
 }
