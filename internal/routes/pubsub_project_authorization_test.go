@@ -30,7 +30,7 @@ func TestPubSubVerifiedProjectBoundary(t *testing.T) {
  store:=newFakePubSubResourceStore()
  // This fixture represents authority after a trusted Prajapati binding evaluator
  // has verified the principal, policy digest and project.
- a:=&pubSubResourceAPI{store:func()(pubSubResourceStore,error){return store,nil}}
+ a:=&pubSubResourceAPI{store:func()(pubSubResourceStore,error){return store,nil}, projectStore:func(string)(pubSubResourceStore,error){return store,nil}}
  project:="alpha"
  resource:="project/alpha/pubsub/channels/collection"
  a.projectResolver=fixedProjectResolver{binding:fixedProjectBinding{
