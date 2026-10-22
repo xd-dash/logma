@@ -133,6 +133,19 @@
         touch "$out/etc/s6-overlay/user-bundles.d/user/contents.d/nginx"
       '';
 
+      # Independent provider for Fatline; the legacy s6 cell remains available.
+      providerImage = pkgs.dockerTools.buildLayeredImage {
+        name = "logma-provider";
+        tag = "candidate";
+        contents = [ logma pkgs.cacert ];
+        config = {
+          Entrypoint = [ "${logma}/bin/logma" ];
+          Cmd = [ "18080" ];
+          ExposedPorts = { "18080/tcp" = {}; };
+          Env = [ "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt" ];
+        };
+      };
+
       image = pkgs.dockerTools.buildLayeredImage {
         name = "logma-cell";
         tag = "latest";
@@ -165,6 +178,7 @@
         default = image;
         logma = logma;
         image = image;
+        provider-image = providerImage;
       };
     };
 }
