@@ -16,6 +16,10 @@ import (
 
 const defaultTickInterval = time.Second
 
+// Re-arm from durable intent periodically. Redis is intentionally RAM-only and
+// can lose timer keys while the Logma process remains alive.
+const reconcileInterval = 5 * time.Second
+
 type Service struct {
 	store        FileStore
 	redisStore   *ratelimiter.RedisStore
@@ -230,13 +234,40 @@ func (s *Service) run(ctx context.Context) {
 	defer close(s.done)
 	ticker := time.NewTicker(s.tickInterval)
 	defer ticker.Stop()
+	reconcileTicker := time.NewTicker(reconcileInterval)
+	defer reconcileTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			s.tick(ctx)
+		case <-reconcileTicker.C:
+			s.reconcile(ctx)
 		}
+	}
+}
+
+// reconcile uses the durable registration files as the authority, preserving
+// their original absolute deadlines. ArmTimerAt(reset=false) must remain
+// idempotent for existing timers; errors are retried on the next interval.
+func (s *Service) reconcile(ctx context.Context) {
+	regs, err := s.store.LoadAll()
+	if err != nil {
+		fmt.Printf("lifecycle reconciliation failed to load durable registrations: %v\\n", err)
+		return
+	}
+	for _, reg := range regs {
+		if ctx.Err() != nil {
+			return
+		}
+		if _, err := s.arm(ctx, reg, false); err != nil {
+			fmt.Printf("lifecycle reconciliation failed for %s: %v\\n", reg.DeploymentID, err)
+			continue
+		}
+		s.mu.Lock()
+		s.registrations[reg.DeploymentID] = reg
+		s.mu.Unlock()
 	}
 }
 

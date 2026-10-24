@@ -11,6 +11,7 @@ import (
 	ratelimiter "github.com/dash-xd/ratelimiter"
 	lifecycleprofile "github.com/dash-xd/ratelimiter/profile/lifecycle"
 	"github.com/redis/go-redis/v9"
+ "github.com/xd-dash/logma/internal/redisconfig"
 )
 
 const defaultKeyspace = "logma:lifecycle"
@@ -22,10 +23,7 @@ type Runtime struct {
 }
 
 func NewRuntime(ctx context.Context, stateDir string) (*Runtime, error) {
-	client, err := ratelimiter.NewClientFromEnv()
-	if err != nil {
-		return nil, err
-	}
+	client := redis.NewClient(redisconfig.OptionsFromEnv())
 
 	store, err := ratelimiter.NewRedisStore(client, ratelimiter.RedisConfig{Keyspace: defaultKeyspace})
 	if err != nil {
