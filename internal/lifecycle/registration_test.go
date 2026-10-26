@@ -148,3 +148,30 @@ func TestExistingRegistrationRetryCannotRebaseActivation(t *testing.T) {
 		t.Fatal("retry with changed activation unexpectedly matched")
 	}
 }
+
+func TestDispatchFencePersistsAndDeletionClearsIt(t *testing.T) {
+	store := FileStore{Dir: t.TempDir()}
+	reg, err := NewRegistration(RegisterRequest{
+		DeploymentID: "fenced-deployment",
+		PolicyName: ratelimiter.LifecycleSmoke1M,
+		ShutdownChannel: "lifecycle:shutdown",
+	}, time.Now().UTC())
+	if err != nil { t.Fatal(err) }
+	if err := store.Create(reg); err != nil { t.Fatal(err) }
+	if completed, err := store.IsDispatched(reg.DeploymentID); err != nil || completed {
+		t.Fatalf("unexpected initial fence: %v, %v", completed, err)
+	}
+	if err := store.MarkDispatched(reg.DeploymentID); err != nil { t.Fatal(err) }
+	if err := store.MarkDispatched(reg.DeploymentID); err != nil { t.Fatal(err) }
+	if completed, err := store.IsDispatched(reg.DeploymentID); err != nil || !completed {
+		t.Fatalf("dispatch fence missing: %v, %v", completed, err)
+	}
+	regs, err := store.LoadAll()
+	if err != nil || len(regs) != 1 {
+		t.Fatalf("registration should survive dispatch fence: %#v, %v", regs, err)
+	}
+	if err := store.Delete(reg.DeploymentID); err != nil { t.Fatal(err) }
+	if completed, err := store.IsDispatched(reg.DeploymentID); err != nil || completed {
+		t.Fatalf("dispatch fence survived deletion: %v, %v", completed, err)
+	}
+}
