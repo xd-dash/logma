@@ -248,7 +248,15 @@ func (s FileStore) MarkDispatched(deploymentID string) error {
 		_ = f.Close()
 		return err
 	}
-	return f.Close()
+	if err := f.Close(); err != nil {
+		return err
+	}
+	dir, err := os.Open(s.Dir)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 func (s FileStore) IsDispatched(deploymentID string) (bool, error) {
