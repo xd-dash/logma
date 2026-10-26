@@ -16,12 +16,19 @@ import (
 
 const defaultTickInterval = time.Second
 
+// Re-arm from durable intent periodically. Redis is intentionally RAM-only and
+// can lose timer keys while the Logma process remains alive.
+const reconcileInterval = 5 * time.Second
+
 type Service struct {
 	store        FileStore
 	redisStore   *ratelimiter.RedisStore
 	limiter      *ratelimiter.Limiter
 	tickInterval time.Duration
 
+	// Serialize durable registration mutations and reconciliation so a deleted
+	// registration cannot be re-armed by an in-flight reconciliation pass.
+	operationMu   sync.Mutex
 	mu            sync.RWMutex
 	registrations map[string]Registration
 	cancel        context.CancelFunc
@@ -105,6 +112,8 @@ func (s *Service) Start(ctx context.Context) error {
 }
 
 func (s *Service) Register(ctx context.Context, req RegisterRequest) (Registration, error) {
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
 	if existing, err := s.store.Load(req.DeploymentID); err == nil {
 		matches, matchErr := existing.MatchesRequest(req)
 		if matchErr != nil {
@@ -173,6 +182,8 @@ func (s *Service) List() []Registration {
 // Delete is administrative unregister, not cleanup acknowledgement. Callers
 // must not use it as evidence that deployment resources were destroyed.
 func (s *Service) Delete(ctx context.Context, deploymentID string) error {
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
 	if deploymentID == "" {
 		return fmt.Errorf("deployment id is required")
 	}
@@ -230,13 +241,42 @@ func (s *Service) run(ctx context.Context) {
 	defer close(s.done)
 	ticker := time.NewTicker(s.tickInterval)
 	defer ticker.Stop()
+	reconcileTicker := time.NewTicker(reconcileInterval)
+	defer reconcileTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			s.tick(ctx)
+		case <-reconcileTicker.C:
+			s.reconcile(ctx)
 		}
+	}
+}
+
+// reconcile uses the durable registration files as the authority, preserving
+// their original absolute deadlines. ArmTimerAt(reset=false) must remain
+// idempotent for existing timers; errors are retried on the next interval.
+func (s *Service) reconcile(ctx context.Context) {
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	regs, err := s.store.LoadAll()
+	if err != nil {
+		fmt.Printf("lifecycle reconciliation failed to load durable registrations: %v\n", err)
+		return
+	}
+	for _, reg := range regs {
+		if ctx.Err() != nil {
+			return
+		}
+		if _, err := s.arm(ctx, reg, false); err != nil {
+			fmt.Printf("lifecycle reconciliation failed for %s: %v\n", reg.DeploymentID, err)
+			continue
+		}
+		s.mu.Lock()
+		s.registrations[reg.DeploymentID] = reg
+		s.mu.Unlock()
 	}
 }
 

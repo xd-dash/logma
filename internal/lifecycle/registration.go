@@ -234,8 +234,52 @@ func (s FileStore) LoadAll() ([]Registration, error) {
 	return regs, nil
 }
 
+// MarkDispatched records that Redis reported successful shutdown publication.
+// This is a durable replay fence, not proof that a subscriber completed teardown.
+func (s FileStore) MarkDispatched(deploymentID string) error {
+	if err := os.MkdirAll(s.Dir, 0700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(s.dispatchedPath(deploymentID), os.O_WRONLY|os.O_CREATE, 0600)
+	if err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	dir, err := os.Open(s.Dir)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
+func (s FileStore) IsDispatched(deploymentID string) (bool, error) {
+	_, err := os.Stat(s.dispatchedPath(deploymentID))
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return false, err
+}
+
+func (s FileStore) dispatchedPath(deploymentID string) string {
+	return filepath.Join(s.Dir, deploymentID+".dispatched")
+}
+
 func (s FileStore) Delete(deploymentID string) error {
 	err := os.Remove(s.path(deploymentID))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	err = os.Remove(s.dispatchedPath(deploymentID))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}

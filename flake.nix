@@ -142,9 +142,9 @@
         config = {
           Entrypoint = [ "${logma}/bin/logma" ];
           Env = [
-            "REDIS_NETWORK=unix"
-            "REDIS_SOCKET=/run/redis/redis.sock"
-            "LOGMA_BIND_ADDR=127.0.0.1"
+            "REDIS_NETWORK=tcp"
+            "REDIS_URI=redis-proxy:6379"
+            "LOGMA_BIND_ADDR=0.0.0.0"
           ];
           WorkingDir = "/";
         };

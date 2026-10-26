@@ -6,26 +6,27 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"sync"
 	"time"
 
 	ratelimiter "github.com/dash-xd/ratelimiter"
 	lifecycleprofile "github.com/dash-xd/ratelimiter/profile/lifecycle"
 	"github.com/redis/go-redis/v9"
+ "github.com/xd-dash/logma/internal/redisconfig"
 )
 
 const defaultKeyspace = "logma:lifecycle"
+const runtimeReconcileInterval = 5 * time.Second
 
 type Runtime struct {
+	operationMu sync.Mutex
 	state   FileStore
 	client  *redis.Client
 	limiter *ratelimiter.Limiter
 }
 
 func NewRuntime(ctx context.Context, stateDir string) (*Runtime, error) {
-	client, err := ratelimiter.NewClientFromEnv()
-	if err != nil {
-		return nil, err
-	}
+	client := redis.NewClient(redisconfig.OptionsFromEnv())
 
 	store, err := ratelimiter.NewRedisStore(client, ratelimiter.RedisConfig{Keyspace: defaultKeyspace})
 	if err != nil {
@@ -92,7 +93,12 @@ func (r *Runtime) Close() error {
 }
 
 func (r *Runtime) Register(ctx context.Context, req RegisterRequest) (Registration, bool, error) {
+	r.operationMu.Lock()
+	defer r.operationMu.Unlock()
 	if existing, err := r.state.Load(req.DeploymentID); err == nil {
+		completed, err := r.state.IsDispatched(req.DeploymentID)
+		if err != nil { return Registration{}, false, fmt.Errorf("check lifecycle dispatch fence: %w", err) }
+		if completed { return existing, false, fmt.Errorf("deployment %q already dispatched shutdown", req.DeploymentID) }
 		matches, matchErr := existing.MatchesRequest(req)
 		if matchErr != nil {
 			return Registration{}, false, matchErr
@@ -141,12 +147,21 @@ func (r *Runtime) Register(ctx context.Context, req RegisterRequest) (Registrati
 }
 
 func (r *Runtime) RestoreAll(ctx context.Context) (int, error) {
+	r.operationMu.Lock()
+	defer r.operationMu.Unlock()
+	return r.restoreAllLocked(ctx)
+}
+
+func (r *Runtime) restoreAllLocked(ctx context.Context) (int, error) {
 	regs, err := r.state.LoadAll()
 	if err != nil {
 		return 0, err
 	}
 	restored := 0
 	for _, reg := range regs {
+		completed, err := r.state.IsDispatched(reg.DeploymentID)
+		if err != nil { return restored, fmt.Errorf("check dispatch fence %s: %w", reg.DeploymentID, err) }
+		if completed { continue }
 		armed, err := r.arm(ctx, reg, false)
 		if err != nil {
 			return restored, fmt.Errorf("restore %s: %w", reg.DeploymentID, err)
@@ -170,22 +185,34 @@ func (r *Runtime) List() ([]Registration, error) {
 }
 
 func (r *Runtime) TickAll(ctx context.Context) (map[string]ratelimiter.TickResult, error) {
+	r.operationMu.Lock()
+	defer r.operationMu.Unlock()
 	regs, err := r.state.LoadAll()
 	if err != nil {
 		return nil, err
 	}
 	results := make(map[string]ratelimiter.TickResult, len(regs))
 	for _, reg := range regs {
+		completed, err := r.state.IsDispatched(reg.DeploymentID)
+		if err != nil { return results, fmt.Errorf("check dispatch fence %s: %w", reg.DeploymentID, err) }
+		if completed { continue }
 		result, err := r.limiter.Tick(ctx, lifecycleBucket(reg.DeploymentID))
 		if err != nil {
 			return results, fmt.Errorf("tick %s: %w", reg.DeploymentID, err)
 		}
 		results[reg.DeploymentID] = result
+		if result.Dispatched > 0 {
+			if err := r.state.MarkDispatched(reg.DeploymentID); err != nil {
+				return results, fmt.Errorf("persist dispatch fence %s: %w", reg.DeploymentID, err)
+			}
+		}
 	}
 	return results, nil
 }
 
 func (r *Runtime) Remove(ctx context.Context, deploymentID string) (bool, error) {
+	r.operationMu.Lock()
+	defer r.operationMu.Unlock()
 	removed, err := r.limiter.CancelTimer(ctx, lifecycleBucket(deploymentID))
 	if err != nil {
 		return false, err
@@ -202,6 +229,8 @@ func (r *Runtime) RunTicker(ctx context.Context, interval time.Duration, report 
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	reconcileTicker := time.NewTicker(runtimeReconcileInterval)
+	defer reconcileTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -209,6 +238,10 @@ func (r *Runtime) RunTicker(ctx context.Context, interval time.Duration, report 
 		case <-ticker.C:
 			if _, err := r.TickAll(ctx); err != nil && report != nil {
 				report(err)
+			}
+		case <-reconcileTicker.C:
+			if _, err := r.RestoreAll(ctx); err != nil && report != nil {
+				report(fmt.Errorf("reconcile durable lifecycle registrations: %w", err))
 			}
 		}
 	}
