@@ -96,6 +96,9 @@ func (r *Runtime) Register(ctx context.Context, req RegisterRequest) (Registrati
 	r.operationMu.Lock()
 	defer r.operationMu.Unlock()
 	if existing, err := r.state.Load(req.DeploymentID); err == nil {
+		completed, err := r.state.IsDispatched(req.DeploymentID)
+		if err != nil { return Registration{}, false, fmt.Errorf("check lifecycle dispatch fence: %w", err) }
+		if completed { return existing, false, fmt.Errorf("deployment %q already dispatched shutdown", req.DeploymentID) }
 		matches, matchErr := existing.MatchesRequest(req)
 		if matchErr != nil {
 			return Registration{}, false, matchErr
@@ -156,6 +159,9 @@ func (r *Runtime) restoreAllLocked(ctx context.Context) (int, error) {
 	}
 	restored := 0
 	for _, reg := range regs {
+		completed, err := r.state.IsDispatched(reg.DeploymentID)
+		if err != nil { return restored, fmt.Errorf("check dispatch fence %s: %w", reg.DeploymentID, err) }
+		if completed { continue }
 		armed, err := r.arm(ctx, reg, false)
 		if err != nil {
 			return restored, fmt.Errorf("restore %s: %w", reg.DeploymentID, err)
@@ -179,17 +185,27 @@ func (r *Runtime) List() ([]Registration, error) {
 }
 
 func (r *Runtime) TickAll(ctx context.Context) (map[string]ratelimiter.TickResult, error) {
+	r.operationMu.Lock()
+	defer r.operationMu.Unlock()
 	regs, err := r.state.LoadAll()
 	if err != nil {
 		return nil, err
 	}
 	results := make(map[string]ratelimiter.TickResult, len(regs))
 	for _, reg := range regs {
+		completed, err := r.state.IsDispatched(reg.DeploymentID)
+		if err != nil { return results, fmt.Errorf("check dispatch fence %s: %w", reg.DeploymentID, err) }
+		if completed { continue }
 		result, err := r.limiter.Tick(ctx, lifecycleBucket(reg.DeploymentID))
 		if err != nil {
 			return results, fmt.Errorf("tick %s: %w", reg.DeploymentID, err)
 		}
 		results[reg.DeploymentID] = result
+		if result.Dispatched > 0 {
+			if err := r.state.MarkDispatched(reg.DeploymentID); err != nil {
+				return results, fmt.Errorf("persist dispatch fence %s: %w", reg.DeploymentID, err)
+			}
+		}
 	}
 	return results, nil
 }
