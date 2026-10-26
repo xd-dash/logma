@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"sync"
 	"time"
 
 	ratelimiter "github.com/dash-xd/ratelimiter"
@@ -15,8 +16,10 @@ import (
 )
 
 const defaultKeyspace = "logma:lifecycle"
+const runtimeReconcileInterval = 5 * time.Second
 
 type Runtime struct {
+	operationMu sync.Mutex
 	state   FileStore
 	client  *redis.Client
 	limiter *ratelimiter.Limiter
@@ -90,6 +93,8 @@ func (r *Runtime) Close() error {
 }
 
 func (r *Runtime) Register(ctx context.Context, req RegisterRequest) (Registration, bool, error) {
+	r.operationMu.Lock()
+	defer r.operationMu.Unlock()
 	if existing, err := r.state.Load(req.DeploymentID); err == nil {
 		matches, matchErr := existing.MatchesRequest(req)
 		if matchErr != nil {
@@ -139,6 +144,12 @@ func (r *Runtime) Register(ctx context.Context, req RegisterRequest) (Registrati
 }
 
 func (r *Runtime) RestoreAll(ctx context.Context) (int, error) {
+	r.operationMu.Lock()
+	defer r.operationMu.Unlock()
+	return r.restoreAllLocked(ctx)
+}
+
+func (r *Runtime) restoreAllLocked(ctx context.Context) (int, error) {
 	regs, err := r.state.LoadAll()
 	if err != nil {
 		return 0, err
@@ -184,6 +195,8 @@ func (r *Runtime) TickAll(ctx context.Context) (map[string]ratelimiter.TickResul
 }
 
 func (r *Runtime) Remove(ctx context.Context, deploymentID string) (bool, error) {
+	r.operationMu.Lock()
+	defer r.operationMu.Unlock()
 	removed, err := r.limiter.CancelTimer(ctx, lifecycleBucket(deploymentID))
 	if err != nil {
 		return false, err
@@ -200,6 +213,8 @@ func (r *Runtime) RunTicker(ctx context.Context, interval time.Duration, report 
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	reconcileTicker := time.NewTicker(runtimeReconcileInterval)
+	defer reconcileTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -207,6 +222,10 @@ func (r *Runtime) RunTicker(ctx context.Context, interval time.Duration, report 
 		case <-ticker.C:
 			if _, err := r.TickAll(ctx); err != nil && report != nil {
 				report(err)
+			}
+		case <-reconcileTicker.C:
+			if _, err := r.RestoreAll(ctx); err != nil && report != nil {
+				report(fmt.Errorf("reconcile durable lifecycle registrations: %w", err))
 			}
 		}
 	}
