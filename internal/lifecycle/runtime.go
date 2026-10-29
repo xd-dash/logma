@@ -19,12 +19,15 @@ import (
 
 const defaultKeyspace = "logma:lifecycle"
 const lifecycleSubsystem = "logma:lifecycle"
+const readinessRedisIOTimeout = 750 * time.Millisecond
 
 type Runtime struct {
-	state   FileStore
-	client  *redis.Client
-	limiter *ratelimiter.Limiter
-	scope   string
+	state            FileStore
+	client           *redis.Client
+	limiter          *ratelimiter.Limiter
+	readinessClient  *redis.Client
+	readinessLimiter *ratelimiter.Limiter
+	scope            string
 }
 
 func NewRuntime(ctx context.Context, stateDir string) (*Runtime, error) {
@@ -66,34 +69,61 @@ func NewRuntime(ctx context.Context, stateDir string) (*Runtime, error) {
 		}}
 	})
 	profile := lifecycleprofile.New(resolver)
+	readinessClient := newReadinessClient(client)
+	readinessStore, err := ratelimiter.NewRedisStore(readinessClient, ratelimiter.RedisConfig{Keyspace: redisKeyspace})
+	if err != nil {
+		_ = readinessClient.Close()
+		_ = client.Close()
+		return nil, err
+	}
+	readinessLimiter, err := readinessStore.Limiter(profile)
+	if err != nil {
+		_ = readinessClient.Close()
+		_ = client.Close()
+		return nil, err
+	}
 	internalBootstrap, err := lifecycleBootstrapInternal()
 	if err != nil {
+		_ = readinessClient.Close()
 		_ = client.Close()
 		return nil, err
 	}
 	if internalBootstrap {
 		if err := store.Bootstrap(ctx, profile); err != nil {
+			_ = readinessClient.Close()
 			_ = client.Close()
 			return nil, fmt.Errorf("bootstrap lifecycle profile: %w", err)
 		}
 	}
 	limiter, err := store.Limiter(profile)
 	if err != nil {
+		_ = readinessClient.Close()
 		_ = client.Close()
 		return nil, err
 	}
 
 	runtime := &Runtime{
-		state:   FileStore{Dir: stateDir},
-		client:  client,
-		limiter: limiter,
-		scope:   scope,
+		state:            FileStore{Dir: stateDir},
+		client:           client,
+		limiter:          limiter,
+		readinessClient:  readinessClient,
+		readinessLimiter: readinessLimiter,
+		scope:            scope,
 	}
 	if _, err := runtime.RestoreAll(ctx); err != nil {
-		_ = client.Close()
+		_ = runtime.Close()
 		return nil, fmt.Errorf("restore lifecycle registrations: %w", err)
 	}
 	return runtime, nil
+}
+
+func newReadinessClient(client *redis.Client) *redis.Client {
+	options := *client.Options()
+	options.ContextTimeoutEnabled = true
+	options.DialTimeout = readinessRedisIOTimeout
+	options.ReadTimeout = readinessRedisIOTimeout
+	options.WriteTimeout = readinessRedisIOTimeout
+	return redis.NewClient(&options)
 }
 
 func lifecycleKeyspace(scope string) (string, string, error) {
@@ -109,25 +139,36 @@ func lifecycleKeyspace(scope string) (string, string, error) {
 }
 
 func (r *Runtime) Close() error {
-	if r == nil || r.client == nil {
+	if r == nil {
 		return nil
 	}
-	return r.client.Close()
+	var closeErr error
+	if r.readinessClient != nil {
+		closeErr = r.readinessClient.Close()
+	}
+	if r.client != nil {
+		if err := r.client.Close(); closeErr == nil {
+			closeErr = err
+		}
+	}
+	return closeErr
 }
 
 // Ready checks Redis transport and the lifecycle Function permission path.
+// It uses an independently bounded Redis client so the HTTP health response is
+// returned inside its request deadline even if the application pool is stuck.
 func (r *Runtime) Ready(ctx context.Context) error {
-	if r == nil || r.client == nil || r.limiter == nil {
+	if r == nil || r.readinessClient == nil || r.readinessLimiter == nil {
 		return errors.New("lifecycle runtime is not initialized")
 	}
-	if err := r.client.Ping(ctx).Err(); err != nil {
+	if err := r.readinessClient.Ping(ctx).Err(); err != nil {
 		return fmt.Errorf("redis ping: %w", err)
 	}
 	var probe [16]byte
 	if _, err := rand.Read(probe[:]); err != nil {
 		return fmt.Errorf("create readiness probe: %w", err)
 	}
-	if _, err := r.limiter.CancelTimer(ctx, "__fatline_readiness_probe__"+hex.EncodeToString(probe[:])); err != nil {
+	if _, err := r.readinessLimiter.CancelTimer(ctx, "__fatline_readiness_probe__"+hex.EncodeToString(probe[:])); err != nil {
 		return fmt.Errorf("lifecycle Function probe: %w", err)
 	}
 	return nil
