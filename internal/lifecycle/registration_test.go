@@ -148,3 +148,40 @@ func TestExistingRegistrationRetryCannotRebaseActivation(t *testing.T) {
 		t.Fatal("retry with changed activation unexpectedly matched")
 	}
 }
+
+func TestDispatchFencePersistsAndDeleteClearsIt(t *testing.T) {
+	store := FileStore{Dir: t.TempDir()}
+	dispatched, err := store.IsDispatched("deployment-1")
+	if err != nil || dispatched {
+		t.Fatalf("initial dispatch fence = %v, %v; want false, nil", dispatched, err)
+	}
+	if err := store.MarkDispatched("deployment-1"); err != nil {
+		t.Fatal(err)
+	}
+	dispatched, err = store.IsDispatched("deployment-1")
+	if err != nil || !dispatched {
+		t.Fatalf("dispatch fence = %v, %v; want true, nil", dispatched, err)
+	}
+	if err := store.MarkDispatched("deployment-1"); err != nil {
+		t.Fatalf("idempotent MarkDispatched: %v", err)
+	}
+	if err := store.Delete("deployment-1"); err != nil {
+		t.Fatal(err)
+	}
+	dispatched, err = store.IsDispatched("deployment-1")
+	if err != nil || dispatched {
+		t.Fatalf("dispatch fence after delete = %v, %v; want false, nil", dispatched, err)
+	}
+}
+
+func TestDispatchFenceRejectsInvalidDeploymentID(t *testing.T) {
+	store := FileStore{Dir: t.TempDir()}
+	for _, deploymentID := range []string{"", "../escape", "a/b"} {
+		if err := store.MarkDispatched(deploymentID); err == nil {
+			t.Errorf("MarkDispatched(%q) succeeded", deploymentID)
+		}
+		if _, err := store.IsDispatched(deploymentID); err == nil {
+			t.Errorf("IsDispatched(%q) succeeded", deploymentID)
+		}
+	}
+}
