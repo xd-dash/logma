@@ -254,7 +254,7 @@ func (s FileStore) MarkDispatched(deploymentID string) error {
 		_ = tmp.Close()
 		return err
 	}
-	if _, err := tmp.Write([]byte("dispatched\\n")); err != nil {
+	if _, err := tmp.Write([]byte("dispatched")); err != nil {
 		_ = tmp.Close()
 		return err
 	}
