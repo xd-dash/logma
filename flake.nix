@@ -160,11 +160,28 @@
         };
         maxLayers = 100;
       };
+
+      # Fatline consumes the multitenant API as a provider attached to Agni's
+      # scoped Redis ACL and Podman/systemd topology. Keep the historical
+      # all-in-one cell image available above, but publish this standalone API
+      # image for compositions that own Redis and ingress separately.
+      providerImage = pkgs.dockerTools.buildLayeredImage {
+        name = "localhost/logma-provider";
+        tag = "candidate";
+        contents = [ pkgs.cacert pkgs.glibc logma ];
+        config = {
+          Entrypoint = [ "${logma}/bin/logma" ];
+          Cmd = [ "8080" ];
+          ExposedPorts = { "8080/tcp" = {}; };
+          Env = [ "LOGMA_LIFECYCLE_STATE_DIR=/var/lib/logma/lifecycle" ];
+        };
+      };
     in {
       packages.${system} = {
         default = image;
         logma = logma;
         image = image;
+        provider-image = providerImage;
       };
     };
 }
