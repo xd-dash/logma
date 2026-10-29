@@ -234,16 +234,80 @@ func (s FileStore) LoadAll() ([]Registration, error) {
 	return regs, nil
 }
 
-func (s FileStore) Delete(deploymentID string) error {
-	err := os.Remove(s.path(deploymentID))
-	if errors.Is(err, os.ErrNotExist) {
+func (s FileStore) MarkDispatched(deploymentID string) error {
+	if err := validateDeploymentID(deploymentID); err != nil {
+		return err
+	}
+	if s.Dir == "" {
+		return errors.New("lifecycle state directory is empty")
+	}
+	if err := os.MkdirAll(s.Dir, 0700); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(s.dispatchedPath(deploymentID), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if errors.Is(err, os.ErrExist) {
 		return nil
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write([]byte("dispatched\n")); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	dir, err := os.Open(s.Dir)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
+func (s FileStore) IsDispatched(deploymentID string) (bool, error) {
+	if err := validateDeploymentID(deploymentID); err != nil {
+		return false, err
+	}
+	_, err := os.Stat(s.dispatchedPath(deploymentID))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (s FileStore) Delete(deploymentID string) error {
+	if err := validateDeploymentID(deploymentID); err != nil {
+		return err
+	}
+	var firstErr error
+	if err := os.Remove(s.path(deploymentID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		firstErr = err
+	}
+	if err := os.Remove(s.dispatchedPath(deploymentID)); err != nil && !errors.Is(err, os.ErrNotExist) && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
 }
 
 func (s FileStore) path(deploymentID string) string {
 	return filepath.Join(s.Dir, deploymentID+".json")
+}
+
+func (s FileStore) dispatchedPath(deploymentID string) string {
+	return filepath.Join(s.Dir, deploymentID+".dispatched")
+}
+
+func validateDeploymentID(deploymentID string) error {
+	if strings.TrimSpace(deploymentID) == "" || strings.ContainsAny(deploymentID, "/\\\x00") {
+		return errors.New("deployment id is invalid")
+	}
+	return nil
 }
 
 func cloneMetadata(in map[string]string) map[string]string {
