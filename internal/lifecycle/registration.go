@@ -244,22 +244,31 @@ func (s FileStore) MarkDispatched(deploymentID string) error {
 	if err := os.MkdirAll(s.Dir, 0700); err != nil {
 		return err
 	}
-	file, err := os.OpenFile(s.dispatchedPath(deploymentID), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if errors.Is(err, os.ErrExist) {
-		return nil
-	}
+	tmp, err := os.CreateTemp(s.Dir, ".dispatch-*")
 	if err != nil {
 		return err
 	}
-	if _, err := file.Write([]byte("dispatched\n")); err != nil {
-		_ = file.Close()
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
 		return err
 	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
+	if _, err := tmp.Write([]byte("dispatched\\n")); err != nil {
+		_ = tmp.Close()
 		return err
 	}
-	if err := file.Close(); err != nil {
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Link(tmpName, s.dispatchedPath(deploymentID)); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return nil
+		}
 		return err
 	}
 	dir, err := os.Open(s.Dir)
@@ -269,7 +278,6 @@ func (s FileStore) MarkDispatched(deploymentID string) error {
 	defer dir.Close()
 	return dir.Sync()
 }
-
 func (s FileStore) IsDispatched(deploymentID string) (bool, error) {
 	if err := validateDeploymentID(deploymentID); err != nil {
 		return false, err
