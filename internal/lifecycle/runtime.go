@@ -2,33 +2,45 @@ package lifecycle
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	ratelimiter "github.com/dash-xd/ratelimiter"
 	lifecycleprofile "github.com/dash-xd/ratelimiter/profile/lifecycle"
 	"github.com/redis/go-redis/v9"
- "github.com/xd-dash/logma/internal/redisconfig"
+
+	"github.com/xd-dash/logma/internal/redisconfig"
+	"github.com/xd-dash/logma/serverless/keyspace"
 )
 
 const defaultKeyspace = "logma:lifecycle"
+const lifecycleSubsystem = "logma:lifecycle"
 const runtimeReconcileInterval = 5 * time.Second
 
 type Runtime struct {
 	operationMu sync.Mutex
-	state   FileStore
-	client  *redis.Client
-	limiter *ratelimiter.Limiter
+	state       FileStore
+	client      *redis.Client
+	limiter     *ratelimiter.Limiter
+	scope       string
 }
 
 func NewRuntime(ctx context.Context, stateDir string) (*Runtime, error) {
+	scope := strings.TrimSpace(os.Getenv("FATLINE_SCOPE"))
+	redisKeyspace, scope, err := lifecycleKeyspace(scope)
+	if err != nil {
+		return nil, err
+	}
 	client := redis.NewClient(redisconfig.OptionsFromEnv())
 
-	store, err := ratelimiter.NewRedisStore(client, ratelimiter.RedisConfig{Keyspace: defaultKeyspace})
+	store, err := ratelimiter.NewRedisStore(client, ratelimiter.RedisConfig{Keyspace: redisKeyspace})
 	if err != nil {
 		_ = client.Close()
 		return nil, err
@@ -77,12 +89,25 @@ func NewRuntime(ctx context.Context, stateDir string) (*Runtime, error) {
 		state:   FileStore{Dir: stateDir},
 		client:  client,
 		limiter: limiter,
+		scope:   scope,
 	}
 	if _, err := runtime.RestoreAll(ctx); err != nil {
 		_ = client.Close()
 		return nil, fmt.Errorf("restore lifecycle registrations: %w", err)
 	}
 	return runtime, nil
+}
+
+func lifecycleKeyspace(scope string) (string, string, error) {
+	if scope == "" {
+		return defaultKeyspace, "", nil
+	}
+	parsed, err := keyspace.ParseScope(scope)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid FATLINE_SCOPE: %w", err)
+	}
+	scope = string(parsed)
+	return scope + ":" + lifecycleSubsystem, scope, nil
 }
 
 func (r *Runtime) Close() error {
@@ -92,7 +117,30 @@ func (r *Runtime) Close() error {
 	return r.client.Close()
 }
 
+// Ready verifies both Redis transport and the lifecycle Function permission
+// path. The random probe bucket cannot collide with a durable application
+// registration and is removed by the same Function it probes.
+func (r *Runtime) Ready(ctx context.Context) error {
+	if r == nil || r.client == nil || r.limiter == nil {
+		return errors.New("lifecycle runtime is not initialized")
+	}
+	if err := r.client.Ping(ctx).Err(); err != nil {
+		return fmt.Errorf("redis ping: %w", err)
+	}
+	var probe [16]byte
+	if _, err := rand.Read(probe[:]); err != nil {
+		return fmt.Errorf("create lifecycle readiness probe: %w", err)
+	}
+	if _, err := r.limiter.CancelTimer(ctx, "__fatline_readiness_probe__"+hex.EncodeToString(probe[:])); err != nil {
+		return fmt.Errorf("lifecycle Function probe: %w", err)
+	}
+	return nil
+}
+
 func (r *Runtime) Register(ctx context.Context, req RegisterRequest) (Registration, bool, error) {
+	if err := r.validateShutdownChannel(req.ShutdownChannel); err != nil {
+		return Registration{}, false, err
+	}
 	r.operationMu.Lock()
 	defer r.operationMu.Unlock()
 	if existing, err := r.state.Load(req.DeploymentID); err == nil {
@@ -146,6 +194,13 @@ func (r *Runtime) Register(ctx context.Context, req RegisterRequest) (Registrati
 	return reg, armed, nil
 }
 
+func (r *Runtime) validateShutdownChannel(channel string) error {
+	if r.scope != "" && !strings.HasPrefix(channel, r.scope+":") {
+		return fmt.Errorf("shutdown_channel must be within FATLINE_SCOPE %q", r.scope)
+	}
+	return nil
+}
+
 func (r *Runtime) RestoreAll(ctx context.Context) (int, error) {
 	r.operationMu.Lock()
 	defer r.operationMu.Unlock()
@@ -159,6 +214,9 @@ func (r *Runtime) restoreAllLocked(ctx context.Context) (int, error) {
 	}
 	restored := 0
 	for _, reg := range regs {
+		if err := r.validateShutdownChannel(reg.ShutdownChannel); err != nil {
+			return restored, fmt.Errorf("restore %s: %w", reg.DeploymentID, err)
+		}
 		completed, err := r.state.IsDispatched(reg.DeploymentID)
 		if err != nil { return restored, fmt.Errorf("check dispatch fence %s: %w", reg.DeploymentID, err) }
 		if completed { continue }

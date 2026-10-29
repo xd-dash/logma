@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/redis/go-redis/v9"
+	"github.com/xd-dash/logma/serverless/keyspace"
 )
 
 var (
@@ -316,6 +317,12 @@ func (m *subscriptionManager) shutdown(
 
 func authenticateAPIKey(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Readiness exposes only dependency health and no application data.
+		// Keep this exact endpoint available to Agni's loopback probe.
+		if r.URL.Path == "/lifecycle/readyz" || r.URL.Path == "/readyz" {
+			next.ServeHTTP(w, r)
+			return
+		}
 		apiKey := os.Getenv("API_KEY")
 		if apiKey == "" {
 			http.Error(
@@ -340,6 +347,52 @@ func authenticateAPIKey(next http.Handler) http.Handler {
 	})
 }
 
+func validateFatlineScope(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw := strings.TrimSpace(os.Getenv("FATLINE_SCOPE"))
+		if raw != "" {
+			if _, err := keyspace.ParseScope(raw); err != nil {
+				http.Error(w, "invalid FATLINE_SCOPE", http.StatusInternalServerError)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func fatlineScopePrefix() string {
+	raw := strings.TrimSpace(os.Getenv("FATLINE_SCOPE"))
+	if raw == "" {
+		return ""
+	}
+	scope, err := keyspace.ParseScope(raw)
+	if err != nil {
+		return "invalid-fatline-scope\x00:"
+	}
+	return string(scope) + ":"
+}
+
+func scopedRedisKey(key string) string { return fatlineScopePrefix() + key }
+
+func unscopedRedisKey(key string) (string, bool) {
+	prefix := fatlineScopePrefix()
+	if prefix == "" {
+		return key, true
+	}
+	if !strings.HasPrefix(key, prefix) {
+		return "", false
+	}
+	return strings.TrimPrefix(key, prefix), true
+}
+
+func scopedRedisChannel(channel string) string {
+	prefix := fatlineScopePrefix()
+	if prefix == "" || strings.HasPrefix(channel, prefix) {
+		return channel
+	}
+	return prefix + channel
+}
+
 func startSubscription(
 	channelName string,
 	callbackURL string,
@@ -351,6 +404,7 @@ func startSubscription(
 	if callbackURL == "" {
 		return nil, errors.New("callback URL is empty")
 	}
+	channelName = scopedRedisChannel(channelName)
 
 	subCtx, cancel := context.WithCancel(rootCtx)
 
@@ -612,14 +666,18 @@ func sendMessageToEndpoint(
 }
 
 func generateTempChannelID(channelName string) string {
-	return fmt.Sprintf(
+	return scopedRedisKey(fmt.Sprintf(
 		"active_subscriptions:%d:%s",
 		time.Now().UnixNano(),
 		channelName,
-	)
+	))
 }
 
 func extractSubscriptionID(key string) string {
+	key, ok := unscopedRedisKey(key)
+	if !ok {
+		return ""
+	}
 	parts := strings.SplitN(
 		key,
 		":",
@@ -731,6 +789,7 @@ func NewRouter() http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.Logger)
+	r.Use(validateFatlineScope)
 	r.Use(authenticateAPIKey)
 
 	r.Route("/channels", func(r chi.Router) {
@@ -890,7 +949,7 @@ func saveSubscriptionGroup(
 ) {
 	activeSubscriptions, err := scanKeys(
 		fmt.Sprintf(
-			activeSubscriptionsPattern,
+			scopedRedisKey(activeSubscriptionsPattern),
 			"*",
 			"*",
 		),
@@ -927,8 +986,12 @@ func saveSubscriptionGroup(
 			continue
 		}
 
+		keyBody, ok := unscopedRedisKey(key)
+		if !ok {
+			continue
+		}
 		parts := strings.SplitN(
-			key,
+			keyBody,
 			":",
 			3,
 		)
@@ -944,12 +1007,12 @@ func saveSubscriptionGroup(
 		activeSubscriptionID := parts[1]
 		channelName := parts[2]
 
-		subscriptionKey := fmt.Sprintf(
+		subscriptionKey := scopedRedisKey(fmt.Sprintf(
 			"subscription_groups:%s:%s:%s",
 			groupID,
 			activeSubscriptionID,
 			channelName,
-		)
+		))
 
 		if err := client.Set(
 			rootCtx,
@@ -994,7 +1057,7 @@ func loadSubscriptionGroup(
 	groupMembers, err := scanKeys(
 		fmt.Sprintf(
 			"%s:%s:*",
-			subscriptionGroupsPrefix,
+			scopedRedisKey(subscriptionGroupsPrefix),
 			groupID,
 		),
 	)
@@ -1084,6 +1147,10 @@ func extractGroupChannelName(
 	key string,
 	groupID string,
 ) (string, bool) {
+	key, ok := unscopedRedisKey(key)
+	if !ok {
+		return "", false
+	}
 	prefix := fmt.Sprintf(
 		"%s:%s:",
 		subscriptionGroupsPrefix,
@@ -1122,7 +1189,7 @@ func listSubscriptionGroups(
 	groupKeys, err := scanKeys(
 		fmt.Sprintf(
 			"%s:*",
-			subscriptionGroupsPrefix,
+			scopedRedisKey(subscriptionGroupsPrefix),
 		),
 	)
 	if err != nil {
@@ -1138,7 +1205,7 @@ func listSubscriptionGroups(
 		map[string]struct{},
 	)
 
-	prefix := subscriptionGroupsPrefix + ":"
+	prefix := scopedRedisKey(subscriptionGroupsPrefix) + ":"
 
 	for _, key := range groupKeys {
 		remainder := strings.TrimPrefix(
