@@ -145,6 +145,13 @@ func (r *Runtime) Register(ctx context.Context, req RegisterRequest) (Registrati
 		if !matches {
 			return Registration{}, false, fmt.Errorf("deployment %q already has different lifecycle intent", req.DeploymentID)
 		}
+		dispatched, err := r.state.IsDispatched(existing.DeploymentID)
+		if err != nil {
+			return existing, false, fmt.Errorf("read lifecycle dispatch fence: %w", err)
+		}
+		if dispatched {
+			return existing, false, nil
+		}
 		armed, err := r.arm(ctx, existing, false)
 		if err != nil {
 			return existing, false, fmt.Errorf("re-arm existing lifecycle registration: %w", err)
@@ -199,6 +206,13 @@ func (r *Runtime) RestoreAll(ctx context.Context) (int, error) {
 	}
 	restored := 0
 	for _, reg := range regs {
+		dispatched, err := r.state.IsDispatched(reg.DeploymentID)
+		if err != nil {
+			return restored, fmt.Errorf("read dispatch fence for %s: %w", reg.DeploymentID, err)
+		}
+		if dispatched {
+			continue
+		}
 		if err := r.validateShutdownChannel(reg.ShutdownChannel); err != nil {
 			return restored, fmt.Errorf("restore %s: %w", reg.DeploymentID, err)
 		}
@@ -231,11 +245,23 @@ func (r *Runtime) TickAll(ctx context.Context) (map[string]ratelimiter.TickResul
 	}
 	results := make(map[string]ratelimiter.TickResult, len(regs))
 	for _, reg := range regs {
+		dispatched, err := r.state.IsDispatched(reg.DeploymentID)
+		if err != nil {
+			return results, fmt.Errorf("read dispatch fence for %s: %w", reg.DeploymentID, err)
+		}
+		if dispatched {
+			continue
+		}
 		result, err := r.limiter.Tick(ctx, lifecycleBucket(reg.DeploymentID))
 		if err != nil {
 			return results, fmt.Errorf("tick %s: %w", reg.DeploymentID, err)
 		}
 		results[reg.DeploymentID] = result
+		if result.Dispatched > 0 {
+			if err := r.state.MarkDispatched(reg.DeploymentID); err != nil {
+				return results, fmt.Errorf("persist dispatch fence for %s: %w", reg.DeploymentID, err)
+			}
+		}
 	}
 	return results, nil
 }
@@ -305,6 +331,13 @@ func (r *Runtime) restoreFutureTimers(ctx context.Context) (int, error) {
 	restored := 0
 	now := time.Now()
 	for _, reg := range regs {
+		dispatched, err := r.state.IsDispatched(reg.DeploymentID)
+		if err != nil {
+			return restored, fmt.Errorf("read dispatch fence for %s: %w", reg.DeploymentID, err)
+		}
+		if dispatched {
+			continue
+		}
 		if err := r.validateShutdownChannel(reg.ShutdownChannel); err != nil {
 			return restored, fmt.Errorf("restore %s: %w", reg.DeploymentID, err)
 		}
