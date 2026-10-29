@@ -316,6 +316,11 @@ func (m *subscriptionManager) shutdown(
 
 func authenticateAPIKey(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Readiness exposes dependency state only and is used by the local Agni probe.
+		if r.URL.Path == "/lifecycle/readyz" || r.URL.Path == "/readyz" {
+			next.ServeHTTP(w, r)
+			return
+		}
 		apiKey := os.Getenv("API_KEY")
 		if apiKey == "" {
 			http.Error(
