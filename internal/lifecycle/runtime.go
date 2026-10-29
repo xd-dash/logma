@@ -257,16 +257,69 @@ func (r *Runtime) RunTicker(ctx context.Context, interval time.Duration, report 
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+
+	// Redis may restart independently while Logma stays healthy. Reconcile
+	// future durable registrations on every pulse so a RAM-only Redis restart
+	// cannot silently discard their timer keys. If Redis or its Functions are
+	// unavailable, retry a full restore before ticking again; this also
+	// reconstructs already-due timers once Redis recovers.
+	fullRestoreRequired := false
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if _, err := r.TickAll(ctx); err != nil && report != nil {
-				report(err)
+			var err error
+			if fullRestoreRequired {
+				_, err = r.RestoreAll(ctx)
+			} else {
+				_, err = r.restoreFutureTimers(ctx)
+			}
+			if err != nil {
+				fullRestoreRequired = true
+				if report != nil {
+					report(fmt.Errorf("reconcile lifecycle timers: %w", err))
+				}
+				continue
+			}
+			fullRestoreRequired = false
+
+			if _, err := r.TickAll(ctx); err != nil {
+				fullRestoreRequired = true
+				if report != nil {
+					report(err)
+				}
 			}
 		}
 	}
+}
+
+// restoreFutureTimers repairs missing RAM-only Redis timers without rearming
+// registrations whose deadline has passed. Those registrations are left to
+// TickAll, avoiding repeated dispatch after a successful timer removal.
+func (r *Runtime) restoreFutureTimers(ctx context.Context) (int, error) {
+	regs, err := r.state.LoadAll()
+	if err != nil {
+		return 0, err
+	}
+	restored := 0
+	now := time.Now()
+	for _, reg := range regs {
+		if err := r.validateShutdownChannel(reg.ShutdownChannel); err != nil {
+			return restored, fmt.Errorf("restore %s: %w", reg.DeploymentID, err)
+		}
+		if !reg.Deadline.After(now) {
+			continue
+		}
+		armed, err := r.arm(ctx, reg, false)
+		if err != nil {
+			return restored, fmt.Errorf("restore %s: %w", reg.DeploymentID, err)
+		}
+		if armed {
+			restored++
+		}
+	}
+	return restored, nil
 }
 
 func (r *Runtime) arm(ctx context.Context, reg Registration, reset bool) (bool, error) {
